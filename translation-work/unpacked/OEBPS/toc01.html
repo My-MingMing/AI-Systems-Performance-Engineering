@@ -1,0 +1,1718 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html []>
+<html xmlns:epub="http://www.idpf.org/2007/ops" xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>nav</title>
+    <link rel="stylesheet" type="text/css" href="epub.css" />
+  </head>
+  <body data-type="book">
+    <nav data-type="toc" epub:type="toc" id="id689">
+      <ol>
+        <li data-type="preface">
+          <a href="preface01.html#pr01_preface_1757308079328825">前言</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="preface01.html#_conventions_used_in_this_book">本书使用的约定</a>
+            </li>
+            <li data-type="sect1">
+              <a href="preface01.html#_using_code_examples">使用代码示例</a>
+            </li>
+            <li data-type="sect1">
+              <a href="preface01.html#_safari_books_online">O’Reilly 在线学习</a>
+            </li>
+            <li data-type="sect1">
+              <a href="preface01.html#_how_to_contact_us">如何联系我们</a>
+            </li>
+            <li data-type="sect1">
+              <a href="preface01.html#_acknowledgments">致谢</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch01.html#ch01_introduction_and_ai_system_overview_1757308026020396">1. 第 1 章 引言与 AI 系统概览</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_the_ai_systems_performance_engineer_1757308026020610">AI 系统性能工程师</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch01.html#ch01_benchmarking_and_profiling_1757308026020672">基准测试与性能分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch01.html#ch01_scaling_distributed_training_and_inference_1757308026020722">扩展分布式训练与推理</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch01.html#ch01_managing_resources_efficiently_1757308026020769">高效管理资源</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch01.html#ch01_cross_team_collaboration_1757308026020814">跨团队协作</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch01.html#ch01_transparency_and_reproducibility_1757308026020863">透明度与可复现性</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_deepseek_scales_to_671_billion_parameter_models_de_1757308026020912">在美国对华硬件出口限制下，DeepSeek 仍扩展至约 6800 亿参数模型</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_toward_100_trillion_parameter_models_1757308026020960">迈向 100 万亿参数模型</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_nvidia_s_ai_supercomputer_in_a_rack_1757308026021012">NVIDIA 的“机架级 AI 超级计算机”</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_mechanical_sympathy_hardware_software_codesign_1757308026021061">机械同理心：软硬件协同设计</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_measuring_goodput_useful_throughput_1757308026021110">衡量“Goodput”：有效吞吐量</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_book_roadmap_and_methodology_1757308026021158">全书路线图与方法论</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_key_takeaways_1757308026021203">关键要点</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch01.html#ch01_conclusion_1757308026021246">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch02.html#ch02_ai_system_hardware_overview_1757308026378717">2. 第 2 章 AI 系统硬件概览</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_the_cpu_and_gpu_superchip_1757308026378855">CPU 与 GPU 超级芯片</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_nvidia_grace_cpu_1757308026378912">NVIDIA Grace CPU</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_nvidia_blackwell_dual_die_gpu_1757308026378965">NVIDIA Blackwell“双裸片”GPU</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_nvidia_gpu_tensor_cores_and_transformer_engine_te_1757308026379019">NVIDIA GPU Tensor Cores 与 Transformer Engine</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_streaming_multiprocessors_sms_threads_and_warp_1757308026379076">流式多处理器、线程与 Warp</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_ultrascale_networking_treating_many_gpus_as_one_1757308026379132">将多块 GPU 视作一体的超大规模网络</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_nvlink_and_nvswitch_1757308026379185">NVLink 与 NVSwitch</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_multi_gpu_programming_1757308026379232">多 GPU 编程</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_in_network_aggregations_with_nvidia_sharp_1757308026379281">使用 NVIDIA SHARP 进行网络内聚合</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_multirack_and_storage_communication_1757308026379329">多机架与存储通信</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_preintegrated_rack_appliance_1757308026379374">预集成机架设备</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_co_packaged_optics_future_of_networking_hardware_1757308026379420">共封装光学器件：网络硬件的未来</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_compute_density_and_power_requirements_1757308026379466">计算密度与功耗要求</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_liquid_cooling_versus_air_cooling_1757308026379519">液冷与风冷对比</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_performance_monitoring_and_utilization_in_practice_1757308026379565">实际性能监控与利用率</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_sharing_and_scheduling_1757308026379608">共享与调度</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_roi_of_upgrading_your_hardware_1757308026379653">升级硬件的投资回报率（ROI）</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_a_glimpse_into_the_future_nvidia_s_roadmap_1757308026379702">展望未来：NVIDIA 路线图</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_blackwell_ultra_and_grace_blackwell_ultra_1757308026379752">Blackwell Ultra 与 Grace Blackwell Ultra</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_vera_rubin_superchip_2026_1757308026379797">Vera Rubin 超级芯片（2026）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_rubin_ultra_and_vera_rubin_ultra_2027_1757308026379845">Rubin Ultra and Vera Rubin Ultra (2027)</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch02.html#ch02_feynman_gpu_2028_and_doubling_something_every_ye_1757308026379894">Feynman GPU（2028）与每年翻倍的路线</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_key_takeaways_1757308026379941">关键要点</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch02.html#ch02_conclusion_1757308026379985">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch03.html#ch03_os_docker_and_kubernetes_tuning_for_gpu_based_en_1757308027909124">3. 第 3 章。 面向 GPU 环境的 OS、Docker 与 Kubernetes 调优</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_operating_system_1757308027909330">操作系统</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_nvidia_software_stack_1757308027909387">NVIDIA 软件栈</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_gpu_driver_1757308027909450">GPU 驱动</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_cuda_toolkit_and_runtime_1757308027909499">CUDA 工具包与运行时</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_cuda_forward_and_backward_compatibility_across_gpu_1757308027909548">CUDA 跨 GPU 硬件代际的向前与向后兼容性</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_c_and_python_cuda_libraries_1757308027909595">C++ 与 Python CUDA 库</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_pytorch_and_higher_level_ai_frameworks_1757308027909643">PyTorch 与高级 AI 框架</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_configuring_the_cpus_and_os_for_gpu_environments_1757308027909705">为 GPU 环境配置 CPU 与操作系统</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_numa_awareness_and_cpu_pinning_1757308027909766">NUMA 感知与 CPU 绑核</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_numa_friendly_memory_allocation_and_memory_pinning_1757308027909824">NUMA 友好的内存分配与锁页内存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_transparent_hugepages_1757308027909872">透明大页（Transparent Hugepages）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_scheduler_and_interrupt_affinity_1757308027909920">调度器与中断亲和性</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_virtual_memory_and_swapping_1757308027909965">虚拟内存与交换</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_filesystem_caching_and_write_back_1757308027910010">文件系统缓存与回写</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_cpu_frequency_and_c_states_1757308027910055">CPU 频率与 C-states</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_tune_host_cpu_memory_allocator_1757308027910100">调优主机 CPU 内存分配器</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_gpu_driver_and_runtime_settings_for_performance_1757308027910157">GPU 驱动与运行时性能设置</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_gpu_persistence_mode_1757308027910211">GPU 持久化模式</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_mps_1757308027910256">MPS</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_mig_1757308027910304">MIG</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_gpu_clock_speeds_and_ecc_1757308027910354">GPU 时钟频率与 ECC</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_gpu_memory_oversubscription_fragmentation_and_ou_1757308027910402">GPU 显存超额分配、碎片与内存不足处理</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_container_runtime_optimizations_for_gpus_1757308027910453">GPU 容器运行时优化</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_nvidia_container_toolkit_and_cuda_compatibility_1757308027910501">NVIDIA Container Toolkit 与 CUDA 兼容性</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_nvidia_container_runtime_1757308027910545">NVIDIA 容器运行时</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_avoiding_container_overlay_filesystem_overhead_1757308027910592">避免容器 OverlayFS 开销</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_reduce_image_size_for_faster_container_startup_1757308027910638">缩小镜像以加快容器启动</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_kubernetes_for_topology_aware_container_orchestrat_1757308027910690">Kubernetes 拓扑感知容器编排与网络</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_orchestrating_containers_with_kubernetes_topology_1757308027910741">使用 Kubernetes Topology Manager 编排容器</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_job_scheduling_with_kubernetes_and_slurm_1757308027910787">Kubernetes 与 Slurm 作业调度</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_slicing_a_gpu_with_mig_1757308027910837">使用 MIG 切分 GPU</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_optimizing_network_communication_for_kubernetes_1757308027910884">优化 Kubernetes 网络通信</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_reducing_kubernetes_orchestration_jitter_1757308027910930">减少 Kubernetes 编排抖动</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_improving_resource_guarantees_1757308027910974">改善资源保证</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_memory_isolation_and_avoiding_the_oom_killer_1757308027911021">内存隔离与避免 OOM Killer</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch03.html#ch03_dealing_with_i_o_isolation_1757308027911067">处理 I/O 隔离</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_key_takeaways_1757308027911113">关键要点</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch03.html#ch03_conclusion_1757308027911157">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch04.html#ch04_tuning_distributed_networking_communication_1757308031864916">4. 第 4 章。 分布式网络通信调优</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch04.html#ch04_overlapping_communication_and_computation_pipelin_1757308031865172">重叠通信与计算（流水线）</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_asynchronous_execution_with_streams_1757308031865237">使用 stream 异步执行</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_reducing_communication_frequency_and_volume_1757308031865288">降低通信频率与数据量</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_achieving_maximal_overlap_in_practice_1757308031865353">在实践中实现最大程度的重叠</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch04.html#ch04_nvidia_magnum_io_optimization_stack_1757308031865411">NVIDIA Magnum IO 优化栈</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch04.html#ch04_high_speed_low_overhead_data_transfers_with_rdma_1757308031865485">使用 RDMA 实现高速、低开销数据传输</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_tuning_multinode_connectivity_1757308031865542">多节点连接调优</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_multinode_communication_pitfalls_1757308031865599">多节点通信常见陷阱</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch04.html#ch04_nccl_for_distributed_multi_gpu_communication_1757308031865976">使用 NCCL 进行分布式多 GPU 通信</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_topology_awareness_in_nccl_1757308031866050">NCCL 的拓扑感知</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_nccl_communication_algorithms_1757308031866097">NCCL 通信算法</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_distributed_data_parallel_strategies_1757308031866147">分布式数据并行策略</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_nccl_communicator_lifecycle_and_environment_gotcha_1757308031866212">NCCL communicator 生命周期与环境配置陷阱</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_profiling_and_debugging_nccl_1757308031866786">分析与调试 NCCL</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_in_network_sharp_aggregation_1757308031866835">SHARP 网络内聚合</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#id85">持久化 NCCL 用户缓冲区与零拷贝注册</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch04.html#ch04_nvidia_s_nixl_and_disaggregated_inference_1757308031866900">NVIDIA NIXL 与解耦推理</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_separate_prefill_and_decode_inference_stages_1757308031866958">分离 prefill 与 decode 推理阶段</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_intelligent_interconnect_routing_for_kv_cache_tran_1757308031867006">KV cache 传输的智能互连路由</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_nixl_asynchronous_api_with_callbacks_1757308031867053">NIXL 异步 API 与完成通知</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_kv_cache_offloading_with_nixl_1757308031867102">使用 NIXL 卸载 KV cache</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_nixl_and_high_performance_inference_systems_like_n_1757308031867150">NIXL 与 NVIDIA Dynamo 等高性能推理系统</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch04.html#ch04_nccl_versus_nixl_1757308031867196">NCCL 与 NIXL 对比</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch04.html#ch04_key_takeaways_1757308031867243">要点总结</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch04.html#ch04_conclusion_1757308031867286">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch05.html#ch05_gpu_based_storage_i_o_optimizations_1757308032401168">5. 第 5 章 面向 GPU 的存储 I/O 优化</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_fast_storage_and_data_locality_1757308032401322">高速存储与数据局部性</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_sequential_versus_random_read_patterns_1757308032401377">顺序读取与随机读取模式</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_tuning_nvme_and_filesystem_for_throughput_1757308032401429">面向吞吐量调优 NVMe 与文件系统</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_using_nvidia_gds_1757308032401497">使用 NVIDIA GDS</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#checkpointing-gpu-state-ch05">使用 cuda-checkpoint 检查点保存 GPU 状态</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_measuring_GDS_gdsio">使用 gdsio 测量 GDS</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_deepseek_s_fire_flyer_file_system_3fs_1757308032401559">DeepSeek 的 Fire-Flyer 文件系统</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_distributed_parallel_filesystems_and_object_stor_1757308032401611">分布式、并行文件系统与对象存储</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_tuning_replicating_and_compressing_data_1757308032401660">数据调优、复制与压缩</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_monitoring_storage_i_o_1757308032401706">监控存储 I/O</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_tuning_the_data_pipeline_1757308032401757">调优数据流水线</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch05.html#ch05_efficient_data_loading_and_preprocessing_1757308032401810">高效加载与预处理数据</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch05.html#ch05_scaling_out_workers_as_you_scale_out_number_of_gpu_1757308032401859">随 GPU 数量扩展 worker</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch05.html#ch05_multimodal_data_processing_with_nvidia_dali_1757308032401905">使用 NVIDIA DALI 处理多模态数据</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch05.html#ch05_creating_high_quality_llm_datasets_with_nvidia_nem_1757308032401953">使用 NVIDIA NeMo Curator 创建高质量 LLM 数据集</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_continuous_profiling_and_tuning_workflow_1757308032402001">持续性能分析与调优工作流</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_diagnosing_communication_versus_compute_bound_wor_1757308032402051">诊断通信受限与计算受限 workload</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_key_takeaways_1757308032402094">关键要点</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch05.html#ch05_conclusion_1757308032402136">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch06.html#ch06_gpu_architecture_cuda_programming_and_maximizing_1757308039143015">6. 第 6 章 GPU 架构、CUDA 编程与最大化占用率</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch06.html#ch06_understanding_gpu_architecture_1757308039143238">理解 GPU 架构</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_threads_warps_blocks_and_grids_1757308039143307">线程、warp、block 与 grid</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_choosing_threads_per_block_and_blocks_per_grid_siz_1757308039143364">选择每 block 的 thread 数和每 grid 的 block 数</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_cuda_gpu_backward_and_forward_compatibility_model_1757308039143416">CUDA GPU 的后向与前向兼容模型</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch06.html#ch06_cuda_programming_refresher_1757308039143490">CUDA 编程回顾</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_configuring_launch_parameters_blocks_per_grid_and_1757308039143564">配置 launch parameter：每 grid 的 block 数与每 block 的 thread 数</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_section_2d_and_3d_kernel_inputs_1757308039143612">2D 与 3D kernel input</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_asynchronous_memory_allocation_and_memory_pools_1757308039143661">异步内存分配与 memory pool</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_understanding_gpu_memory_hierarchy_1757308039143715">理解 GPU memory hierarchy</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_unified_memory_1757308039143767">Unified Memory（统一内存）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_maintaining_high_occupancy_and_gpu_utilization_1757308039143825">保持足够的 occupancy 与 GPU utilization</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch06.html#ch06_tuning_occupancy_with_launch_bounds_1757308039143879">使用 launch bounds 调优 occupancy</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch06.html#ch06_debugging_functional_correctness_with_nvidia_compu_1757308039143929">使用 NVIDIA Compute Sanitizer 调试功能正确性</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch06.html#ch06_roofline_model_compute_bound_or_memory_bound_work_1757308039143979">Roofline 模型：计算受限还是内存受限工作负载</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch06.html#ch06_key_takeaways_1757308039144029">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch06.html#ch06_conclusion_1757308039144074">总结</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch07.html#ch07_profiling_and_tuning_gpu_memory_access_patterns_1757308047313953">7. 第 7 章 分析与调优 GPU 内存访问模式</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_coalesced_versus_uncoalesced_global_memory_access_1757308047314163">合并与非合并的 global memory access</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_vectorized_memory_access_1757308047314230">向量化 memory access</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_tiling_and_data_reuse_using_shared_memory_1757308047314293">使用 shared memory 进行 tiling 与数据复用</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_avoid_shared_memory_bank_conflicts_1757308047314352">避免 shared-memory bank conflict</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_warp_shuffle_intrinsics_avoid_shared_memory_and_e_1757308047314407">Warp shuffle intrinsic：避免 shared memory 与显式同步</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_read_only_data_caches_1757308047314458">只读数据缓存</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_asynchronous_memory_prefetching_and_tensor_memory_1757308047314513">异步内存预取与 Tensor Memory Accelerator</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_key_takeaways_1757308047314574">关键要点</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch07.html#ch07_conclusion_1757308047314620">总结</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch08.html#ch08_occupancy_tuning_warp_efficiency_and_instruction_1757308048870754">8. 第 8 章. Occupancy 调优、Warp 效率与指令级并行</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_profiling_and_diagnosing_gpu_bottlenecks_1757308048870998">分析并诊断 GPU 瓶颈</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_nsight_systems_timeline_view_1757308048871061">Nsight Systems Timeline 视图</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_profiling_and_tuning_the_data_pipeline_1757308048871113">分析并调优 Data Pipeline</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_nsight_compute_and_roofline_analysis_1757308048871161">Nsight Compute 与 Roofline 分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_pytorch_profiler_and_visualization_tools_1757308048871211">PyTorch Profiler 与可视化工具</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_profiler_guided_analysis_1757308048871277">Profiler 引导的分析</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_analyzing_warp_stall_reasons_with_nsight_compute_1757308048871357">使用 Nsight Compute 分析 Warp Stall Reason</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_memory_related_stalls_1757308048871435">Memory-Related Stall 分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_execution_dependency_stalls_1757308048871487">Execution-Dependency Stall 分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_execution_unit_contention_1757308048871540">Execution Unit Contention 分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_other_stall_reasons_1757308048871589">其他 Stall Reason</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_inspecting_achieved_occupancy_and_gpu_utilization_1757308048871649">检查 Achieved Occupancy 与 GPU Utilization</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_kernel_memory_throughput_versus_peak_hbm_memory_ba_1757308048871703">Kernel Memory Throughput 与 Peak HBM Bandwidth</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_kernel_compute_throughput_versus_peak_gpu_flops_1757308048871751">Kernel Compute Throughput 与 Peak GPU FLOP/s</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_iteratively_profiling_and_determining_the_kernel_b_1757308048871804">迭代 Profiling 并确定 Kernel 瓶颈</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_optimizing_the_kernel_1757308048871854">优化 Kernel</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_tuning_occupancy_1757308048871910">调优 Occupancy</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_find_the_right_occupancy_for_your_workload_1757308048871963">为 Workload 找到合适的 Occupancy</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_techniques_for_occupancy_tuning_1757308048872012">Occupancy 调优技术</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_compiler_hints_to_optimize_occupancy_1757308048872061">使用 Compiler Hint 调整 Occupancy</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_determine_optimal_launch_configuration_with_the_oc_1757308048872109">使用 Occupancy API 确定候选 Launch Configuration</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_tuning_occupancy_with_pytorch_1757308048872155">在 PyTorch 中调优 Occupancy</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_improving_warp_execution_efficiency_warp_divergen_1757308048872219">提高 Warp 执行效率（Warp Divergence）</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_causes_of_warp_divergence_1757308048872278">Warp Divergence 的成因</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_techniques_to_avoid_warp_divergence_1757308048872326">避免 Warp Divergence 的方法</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_profiling_and_detecting_warp_divergence_1757308048872377">Profiling 与检测 Warp Divergence</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_using_predication_to_minimize_divergence_1757308048872428">使用 Predication 减少 Divergence</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_efficient_intrawarp_communication_with_warp_intrin_1757308048872482">使用 Warp Intrinsic 高效进行 Warp 内通信</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_pytorch_considerations_for_warp_level_efficiency_1757308048872537">PyTorch 中的 Warp-Level Efficiency 注意事项</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_exposing_instruction_level_parallelism_1757308048872601">暴露 Instruction-Level Parallelism</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_warp_scheduling_and_dual_issue_instructions_1757308048872661">Warp Scheduling 与 Dual-Issue Instruction</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_ilp_and_occupancy_1757308048872712">ILP 与 Occupancy</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_loop_unrolling_interleaving_and_compiler_hinting_1757308048872761">Loop Unrolling、Interleaving 与 Compiler Hint</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch08.html#ch08_profiling_and_mitigating_register_pressure_1757308048872809">Profiling 与缓解 Register Pressure</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_key_takeaways_1757308048872856">要点总结</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch08.html#ch08_conclusion_1757308048872900">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch09.html#ch09_increasing_cuda_kernel_efficiency_and_arithmetic_i_1757308049974203">9. 第 9 章. 提高 CUDA Kernel Efficiency 与 Arithmetic Intensity</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_multilevel_microtiling_and_software_prefetching_1757308049974379">多级 Microtiling 与 Software Prefetching</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_tiling_with_thread_block_clusters_1757308049974439">使用 Thread Block Cluster 进行 Tiling</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_kernel_fusion_1757308049974494">内核融合</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_structured_sparsity_1757308049974555">结构化稀疏性</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_recomputation_versus_memory_trade_off_1757308049974604">Recomputation 与 Memory 的权衡</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_pytorch_and_arithmetic_intensity_1757308049974652">PyTorch 与 Arithmetic Intensity</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_mixed_precision_and_utilizing_tensor_cores_1757308049974706">Mixed Precision 与 Tensor Core 利用</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch09.html#ch09_feeding_tensor_cores_with_tmem_and_tma_1757308049974761">用 TMEM 与 TMA 为 Tensor Core 供给数据</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch09.html#ch09_tf32_and_automatic_mixed_precision_pytorch_1757308049974811">TF32 与 Automatic Mixed Precision（PyTorch）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch09.html#ch09_bf16_fp16_fp8_and_fp4_reduced_precision_1757308049974859">BF16/FP16、FP8 与 FP4 Reduced Precision</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch09.html#ch09_int8_reduced_precision_and_dp4a_instructions_for_i_1757308049974906">用于 Inference 的 INT8 Reduced Precision 与 DP4A Instruction</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch09.html#ch09_transformer_engine_and_tmem_in_depth_1757308049974954">深入理解 Transformer Engine 与 TMEM</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_using_cutlass_for_optimal_arithmetic_intensity_and_1757308049975007">使用 CUTLASS 优化 Arithmetic Intensity 与 Tensor Core Performance</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_inline_ptx_and_sass_tuning_for_microoptimizations_1757308049975062">用于 Microoptimization 的 Inline PTX 与 SASS Tuning</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_deepseek_s_use_of_inline_ptx_for_memory_allocation_1757308049975120">DeepSeek 使用 Inline PTX 优化Cache Allocation Policy</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_key_takeaways_1757308049975169">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch09.html#ch09_conclusion_1757308049975214">总结</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch10.html#ch10_intra_kernel_pipelining_warp_specialization_and_1757308054839290">10. 第 10 章 Intra-Kernel Pipelining、Warp Specialization 与Cooperative Thread Block Cluster</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_intra_kernel_pipelining_techniques_1757308054839533">Intra-Kernel Pipelining 技术</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_cooperative_tiling_and_double_buffering_with_the_c_1757308054839615">使用 CUDA Pipeline API 实现 Cooperative Tiling 与 Double Buffering</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_warp_specialization_and_the_producer_consumer_mode_1757308054839677">Warp Specialization 与 Producer-Consumer Model</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_using_cuda_pipeline_api_for_warp_specialization_1757308054839735">使用 CUDA Pipeline API 实现 Warp Specialization</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_pytorch_cuda_pipeline_api_and_warp_specializatio_1757308054839803">PyTorch、CUDA Pipeline API 与 Warp Specialization</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_persistent_kernels_and_megakernels_1757308054839853">Persistent Kernel 与 Megakernel</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_common_workloads_for_persistent_kernels_1757308054839902">Persistent Kernel 的常见 Workload</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_megakernels_for_inference_1757308054839948">用于 Inference 的 Megakernel</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_persistent_kernels_and_warp_specialization_1757308054839994">Persistent Kernel 与 Warp Specialization</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_cooperative_groups_1757308054840044">协作组</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_cooperative_grid_synchronization_and_persistent_ke_1757308054840096">Cooperative Grid Synchronization 与 Persistent Kernel</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_when_to_combine_persistent_kernels_and_cooperative_1757308054840144">何时组合 Persistent Kernel 与 Cooperative Groups</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_thread_block_clusters_and_distributed_shared_memor_1757308054840200">Thread Block Cluster 与 Distributed Shared Memory</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_thread_block_swizzling_1757308054840254">线程块重排</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_distributed_shared_memory_1757308054840299">分布式共享内存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_scratch_memory_1757308054840343">暂存内存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_launching_a_thread_block_cluster_1757308054840387">启动线程块集群</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_coordinating_thread_block_clusters_with_cooperativ_1757308054840435">使用 Cooperative Groups API 协调线程块集群</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch10.html#ch10_thread_block_pair_1757308054840482">线程块对</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_reducing_global_memory_traffic_with_thread_block_c_1757308054840532">使用 Thread Block Cluster 减少 Global Memory 流量</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_designing_efficient_algorithms_with_thread_block_c_1757308054840582">使用 Thread Block Cluster 设计高效算法</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_warp_specialization_with_thread_block_clusters_1757308054840634">使用 Thread Block Cluster 进行 Warp Specialization</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_key_takeaways_1757308054840684">要点总结</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch10.html#ch10_conclusion_1757308054840728">结语</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch11.html#ch11_inter_kernel_pipelining_synchronization_and_cuda_1757308065280308">11. 第 11 章 Kernel 间 Pipeline、Synchronization 与 CUDA Stream-Ordered Memory Allocation</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_overlapping_kernel_execution_with_cuda_streams_1757308065280527">使用 CUDA Stream 重叠 Kernel Execution</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_using_streams_to_overlap_compute_with_data_transfe_1757308065280591">使用 Stream 重叠 Compute 与 Data Transfer</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_stream_ordered_memory_allocator_1757308065280646">流有序内存分配器</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_using_cuda_streams_and_stream_ordered_memory_alloc_1757308065280703">在 LLM 中使用 CUDA Stream 与 Stream-Ordered Memory Allocator</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_legacy_default_stream_1757308065280753">旧式默认流</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_modern_per_thread_default_stream_ptds_1757308065280802">现代每线程默认流</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_default_versus_explicit_nondefault_streams_1757308065280853">Default Stream 与显式（Nondefault）Stream</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_best_practices_for_default_stream_usage_1757308065280905">Default Stream 使用最佳实践</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_fine_grained_synchronization_with_events_and_callb_1757308065280955">使用 Event 与 Callback 进行细粒度 Synchronization</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_using_cuda_events_for_cross_stream_synchronization_1757308065281002">使用 CUDA Event 进行 Cross-Stream Synchronization</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_pipelining_with_warp_specialization_intra_kernel_1757308065281053">使用 Warp Specialization（Intra-Kernel）与 CUDA Stream（Inter-Kernel）构建 Pipeline</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_warp_specialization_with_thread_block_clusters_and_1757308065281107">结合线程块集群与 CUDA Stream 的 Warp 专门化</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_multi_gpu_compute_and_data_transfer_overlap_with_c_1757308065281162">使用 CUDA Stream 重叠多 GPU 计算与数据传输</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_programmatic_dependent_launch_pdl_1757308065281214">程序化依赖启动（Programmatic Dependent Launch）</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_combining_pdl_and_thread_block_clusters_with_warp_1757308065281265">结合 PDL、线程块集群与 Warp 专门化</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_key_takeaways_1757308065281314">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch11.html#ch11_conclusion_1757308065281358">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch12.html#ch12_dynamic_scheduling_cuda_graphs_and_device_initia_1757308067480815">12. 第 12 章 动态调度、CUDA Graph 与设备发起的内核编排</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch12.html#ch12_dynamic_scheduling_with_atomic_work_queues_1757308067481007">使用原子工作队列进行动态调度</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_atomic_counters_1757308067481069">原子计数器</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_atomic_queues_1757308067481122">原子队列</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch12.html#ch12_cuda_graphs_1757308067481185">CUDA Graphs</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_pytorch_inference_engines_and_cuda_graphs_1757308067481248">PyTorch、推理引擎与 CUDA Graph</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_memory_pools_for_cuda_graphs_1757308067481295">CUDA Graph 的内存池</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_capturing_a_cuda_graph_with_a_cuda_stream_1757308067481346">使用 CUDA 流捕获 CUDA Graph</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_dynamic_graph_update_1757308067481396">动态更新 Graph</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_device_initiated_cuda_graph_launch_1757308067481460">设备发起的 CUDA Graph 启动</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_atomic_queues_and_device_initiated_cuda_graphs_for_1757308067481525">原子队列与设备发起 CUDA Graph 的内核内持久调度</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_conditional_graph_nodes_1757308067481575">条件 Graph 节点</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch12.html#ch12_dynamic_parallelism_1757308067481627">动态并行</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch12.html#ch12_orchestrate_across_multiple_gpus_and_cluster_nodes_1757308067481683">跨多个 GPU 和集群节点进行编排（NVSHMEM）</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_fine_grained_gpu_to_gpu_memory_sharing_with_nvshme_1757308067481737">使用 NVSHMEM 进行细粒度 GPU 间内存共享</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_capturing_multi_gpu_collectives_with_nccl_and_cuda_1757308067481788">使用 NCCL 与 CUDA Graph 捕获多 GPU 集合操作</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch12.html#ch12_pattern_for_n_gpu_scaling_1757308067481837">N-GPU 扩展模式</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch12.html#ch12_roofline_guided_scheduling_and_orchestration_decis_1757308067481886">由 Roofline 指导调度与编排决策</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch12.html#ch12_key_takeaways_1757308067481933">关键要点</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch12.html#ch12_conclusion_1757308067481976">结语</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch13.html#ch13_profiling_tuning_and_scaling_pytorch_1757308071445147">13. 第 13 章 PyTorch 的性能分析、调优与扩展</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_nvtx_markers_and_profiling_tools_1757308071445544">NVTX 标记与性能分析工具</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_profiling_pytorch_to_identify_bottlenecks_1757308071445636">分析 PyTorch 以识别瓶颈</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_using_pytorch_profiler_1757308071445711">使用 PyTorch 分析器</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_system_profiling_with_nsight_systems_and_nvtx_time_1757308071445773">使用 Nsight Systems 和 NVTX 时间线进行系统级分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_kernel_roofline_analysis_for_general_matrix_multip_1757308071445831">通用矩阵乘法（GEMM）的内核 Roofline 分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_cpu_and_gpu_profiling_with_linux_perf_1757308071445891">使用 Linux perf 分析 CPU 和 GPU</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_pytorch_compiler_torch_compile_1757308071445959">PyTorch Compiler (torch.compile)</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_using_the_pytorch_compiler_1757308071446016">使用 PyTorch Compiler</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_compiling_versus_writing_custom_kernels_1757308071446065">编译与编写自定义内核的比较</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_compilation_modes_and_trade_offs_in_speed_memory_1757308071446118">编译模式及速度、内存和编译时间之间的权衡</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#id735">区域编译</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_profiling_and_debugging_compiler_performance_issue_1757308071446171">分析和调试编译器性能问题</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_pytorch_optimized_attention_mechanisms_1757308071446220">PyTorch 优化的 Attention 机制</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_pytorch_architecture_optimization_torchao_quant_1757308071446270">PyTorch 架构优化（torchao）、量化、稀疏与剪枝</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_concurrency_with_cuda_streams_1757308071446323">使用 CUDA Stream 实现并发</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_overlapping_communication_and_computation_1757308071446375">重叠通信与计算</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_stream_synchronization_with_events_1757308071446424">使用 Event 进行 Stream 同步</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_using_cuda_streams_with_moe_models_1757308071446480">在 MoE 模型中使用 CUDA Stream</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_reducing_kernel_launch_overhead_with_cuda_graphs_1757308071446542">使用 CUDA Graph 降低内核启动开销</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_capturing_a_cuda_graph_and_preallocating_memory_1757308071446598">捕获 CUDA Graph 并预分配内存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_replaying_the_graph_1757308071446647">重放 Graph</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_best_practices_for_cuda_graphs_1757308071446694">CUDA Graph 最佳实践</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_cuda_graph_trees_pytorch_compiler_internal_1757308071446742">CUDA Graph Trees（PyTorch Compiler 内部机制）</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_profiling_and_tuning_memory_in_pytorch_1757308071446799">PyTorch 内存分析与调优</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_tuning_the_cuda_memory_allocator_1757308071446855">调优 CUDA 内存分配器</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_activation_gradient_checkpointing_for_memory_savin_1757308071446902">使用激活检查点节省内存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_offloading_parameters_to_cpu_and_nvme_1757308071446948">将参数卸载到 CPU 和 NVMe</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_superoffload">SuperOffload：面向 CPU-GPU 超级芯片优化的卸载</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_fsdp_automatic_checkpointing_and_offloading_1757308071446996">FSDP 自动检查点与卸载</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_combining_fsdp_with_tensor_parallel_and_pipeline_p_1757308071447044">结合使用 FSDP、张量并行与流水线并行</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_pluggable_memory_allocators_and_cross_gpu_data_tra_1757308071447090">可插拔内存分配器与跨 GPU 数据传输</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_enabling_peer_to_peer_p2p_dma_and_ucx_1757308071447137">启用点对点 DMA 与 UCX</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#id226">PyTorch 对称内存</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_optimizing_the_data_input_pipeline_1757308071447184">优化数据输入流水线</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_scaling_with_pytorch_distributed_1757308071447234">使用 PyTorch Distributed 扩展</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_ddp_with_torch_compile_1757308071447282">结合 DDP 与 torch.compile</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_fsdp_with_torch_compile_1757308071447327">结合 FSDP 与 torch.compile</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_tensor_and_pipeline_parallelism_with_torch_compile_1757308071447375">结合张量并行、流水线并行与 torch.compile</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#id229">TorchTitan、AsyncTP、AutoParallel 与 SimpleFSDP</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_multi_gpu_profiling_with_hta_1757308071447420">使用 HTA 分析多 GPU 性能</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_continuous_integration_and_performance_benchmarkin_1757308071447491">持续集成与性能基准测试</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_pytorch_hud_performance_dashboard_1757308071447550">PyTorch HUD 性能仪表板</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch13.html#ch13_performance_benchmarks_and_mlperf_logging_1757308071447605">性能基准与 MLPerf 日志</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_key_takeaways_1757308071447662">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch13.html#ch13_conclusion_1757308071447711">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch14.html#ch14_pytorch_compiler_openai_triton_and_xla_backends_1757308073265113">14. 第 14 章 PyTorch 编译器、OpenAI Triton 与 XLA 后端</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_pytorch_compiler_deep_dive_1757308073265396">深入理解 PyTorch 编译器</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_torchdynamo_for_bytecode_capture_and_graph_extract_1757308073265502">使用 TorchDynamo 捕获字节码并提取图</a>
+                  <ol>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_aot_autograd_fusion_for_forward_and_backward_passe_1757308073265561">AOT Autograd 融合前向与反向传播</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_primtorch_ir_prims_simplified_operator_set_1757308073265616">PrimTorch IR（Prims）简化操作集</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_torchinductor_backend_code_generation_1757308073265671">TorchInductor 后端代码生成</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_autotuning_with_torchinductor_1757308073265724">使用 TorchInductor 自动调优</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_dynamic_shapes_and_variable_sequence_lengths_1757308073265776">动态形状与可变序列长度</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_disabling_the_pytorch_compiler_and_reverting_back_1757308073265876">禁用 PyTorch 编译器并回退到 eager 模式</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_performance_hints_and_debugging_generated_code_1757308073265924">性能提示与调试生成代码</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch14.html#ch14_debugging_numerical_correctness_and_accuracy_1757308073265975">调试数值正确性与准确率</a>
+                    </li>
+                  </ol>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_explaining_and_minimizing_graph_breaks_1757308073266034">解释并减少 Graph Break</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_graph_breaks_and_torch_dynamo_explain_1757308073266093">Graph Break 与 TorchDynamo explain()</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_minimize_graph_recompilations_1757308073266142">减少图重编译</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_mark_functions_and_code_blocks_as_safe_with_allow_1757308073266193">使用 allow_in_graph 将函数和代码块标记为安全</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_tips_for_handling_graph_breaks_1757308073266244">处理 Graph Break 的技巧</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_debugging_compiler_phases_graph_breaks_and_perfo_1757308073266297">调试编译器阶段、Graph Break 与性能</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_writing_custom_kernels_with_openai_triton_1757308073266356">使用 OpenAI Triton 编写自定义内核</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_triton_programming_model_1757308073266410">Triton 编程模型</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_accessing_shared_memory_in_triton_1757308073266457">在 Triton 中访问共享内存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_registering_custom_kernels_with_pytorch_1757308073266510">向 PyTorch 注册自定义内核</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_tuning_kernel_launch_parameters_1757308073266556">调优内核启动参数</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_autotuning_triton_kernels_1757308073266603">自动调优 Triton 内核</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_advanced_triton_kernel_implementations_1757308073266701">高级 Triton 内核实现</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_warp_specialization_with_triton_1757308073266750">使用 Triton 进行 Warp Specialization</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_persistent_matmul_kernel_single_kernel_tiling_1757308073266797">分块与持久化 GEMM 内核（Triton）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_software_pipelining_and_double_buffering_with_trit_1757308073266844">使用 Triton 进行软件流水线和双缓冲</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch14.html#ch14_profiling_with_triton_proton_profiler_1757308073266651">使用 Triton Proton Profiler 进行性能分析</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_pytorch_xla_backend_1757308073266895">PyTorch XLA 后端</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_key_takeaways_1757308073266945">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch14.html#ch14_conclusion_1757308073266991">结语</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch15.html#ch15_multinode_inference_parallelism_decoding_and_ro_1757308073696896">15. 第 15 章 多节点推理、并行、解码与路由优化</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch15.html#ch15_disaggregated_prefill_and_decode_architecture_1757308073697076">解耦式 Prefill 与 Decode 架构</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_prefill_decode_interference_1757308073697143">Prefill-Decode 干扰</a>
+                  <ol>
+                    <li data-type="sect2">
+                      <a href="ch15.html#ch15_scaling_prefill_and_worker_nodes_independently_1757308073697201">独立扩展 Prefill 与 Decode 工作节点</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch15.html#ch15_impact_on_latency_ttft_and_throughput_tpot_1757308073697258">对延迟（TTFT）和吞吐量（TPOT）的影响</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch15.html#ch15_kv_cache_data_transfer_and_nixl_1757308073697310">KV Cache 数据传输与 NIXL</a>
+                    </li>
+                    <li data-type="sect2">
+                      <a href="ch15.html#ch15_deploying_disaggregated_prefill_and_decode_with_ku_1757308073697363">使用 Kubernetes 部署解耦式 Prefill 与 Decode</a>
+                    </li>
+                  </ol>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch15.html#ch15_parallelism_strategies_for_serving_massive_moe_mod_1757308073697424">服务超大规模 MoE 模型的并行策略</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_tensor_parallelism_1757308073697502">张量并行</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_pipeline_parallelism_1757308073697551">流水线并行</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_expert_parallelism_1757308073697597">专家并行</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_data_parallelism_1757308073697641">数据并行</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_context_sequence_parallelism_1757308073697686">上下文（序列）并行</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_hybrid_parallelism_1757308073697731">混合并行</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch15.html#ch15_speculative_decoding_and_parallel_token_generation_1757308073697784">推测解码与并行 Token 生成技术</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_two_model_draft_based_speculative_decoding_and_ea_1757308073697838">双模型、基于 Draft 的推测解码与 EAGLE</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_single_model_self_speculative_decoding_1757308073697889">单模型自推测解码</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_multitoken_decoding_with_medusa_s_multiple_heads_1757308073697941">使用 Medusa 多头进行多 Token 解码</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_interleaving_decode_steps_from_multiple_requests_1757308073697991">交错执行多个请求的 Decode 步骤</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_combining_decoding_techniques_and_evaluating_compl_1757308073698038">组合解码技术并评估复杂性</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch15.html#ch15_constrained_decoding_performance_implications_1757308073698084">约束解码对性能的影响</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch15.html#ch15_dynamic_routing_strategies_for_moe_inference_1757308073698139">MoE 推理的动态路由策略</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_expert_communication_optimization_1757308073698190">专家通信优化</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_load_balancing_capacity_factor_and_expert_replic_1757308073698238">负载均衡、Capacity Factor 与专家复制</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch15.html#ch15_adaptive_expert_routing_and_real_time_monitoring_1757308073698290">自适应专家路由与实时监控</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch15.html#ch15_key_takeaways_1757308073698338">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch15.html#ch15_conclusion_1757308073698383">结语</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch16.html#ch16_profiling_debugging_and_tuning_inference_at_scal_1757308074606131">16. 第 16 章 大规模推理的性能分析、调试与调优</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch16.html#ch16_profiling_debugging_and_tuning_inference_perform_1757308074606403">分析、调试与调优推理性能</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_monitoring_system_metrics_and_counters_1757308074606483">监控系统指标和计数器</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_profiling_with_nsight_systems_and_nsight_compute_1757308074606544">使用 Nsight Systems 和 Nsight Compute 进行性能分析</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_inference_troubleshooting_recipes_1757308074606600">推理故障排查方法</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_full_stack_inference_optimizations_1757308074606656">全栈推理优化</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_debugging_correctness_issues_1757308074606711">调试正确性问题</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch16.html#ch16_dynamic_batching_scheduling_and_routing_1757308074606784">动态批处理、调度与路由</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_dynamic_batching_1757308074606844">动态批处理</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_continuous_batching_1757308074606894">连续批处理</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_continuous_scheduling_1757308074606941">连续调度</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_stall_free_scheduling_chunked_prefill_1757308074606991">无停顿调度（分块预填充）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_latency_aware_scheduling_and_dynamic_routing_1757308074607043">延迟感知调度与动态路由</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch16.html#ch16_systems_level_optimizations_1757308074607097">系统级优化</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_overlapping_communication_and_computation_1757308074607150">重叠通信与计算</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_maximizing_gpu_utilization_and_throughput_versus_l_1757308074607201">最大化 GPU 利用率：吞吐量与延迟的权衡</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_power_and_thermal_constraints_1757308074607247">功耗和热约束</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_error_handling_1757308074607293">错误处理</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_memory_1757308074607336">内存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_kv_cache_offloading_and_memory_pool_allocation_1757308074607383">KV 缓存卸载和内存池分配</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch16.html#ch16_quantization_approaches_for_real_time_inference_1757308074607433">实时推理的量化方法</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_reducing_precision_from_fp16_to_fp8_and_fp4_1757308074607483">将精度从 FP16 降至 FP8 和 FP4</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_weight_only_quantization_gptq_awq_1757308074607530">仅权重量化（GPTQ、AWQ）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_activation_quantization_1757308074607574">激活量化</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_post_training_quantization_workflow_1757308074607619">训练后量化工作流</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_combining_weight_and_activation_quantization_1757308074607664">联合使用权重与激活量化</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_fusing_quantization_dequantization_steps_into_the_1757308074607711">将量化—反量化步骤融合进执行图</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch16.html#ch16_application_level_optimizations_1757308074607777">应用层优化</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_prompt_compression_1757308074607832">提示词压缩</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_prompt_cleansing_1757308074607876">提示词清洗</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_prefix_caching_1757308074607924">前缀缓存</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_model_cascading_and_tiered_model_deployment_1757308074607973">模型级联与分层模型部署</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_streaming_responses_1757308074608019">流式响应</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_debouncing_and_request_coalescing_1757308074608065">防抖与请求合并</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch16.html#ch16_token_output_limits_and_timeouts_1757308074608112">输出 token 限制与超时</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch16.html#ch16_key_takeaways_1757308074608157">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch16.html#ch16_conclusion_1757308074608199">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch17.html#ch17_scaling_disaggregated_prefill_and_decode_for_infer_1757308075339224">17. 第 17 章 扩展用于推理的预填充—解码解耦架构</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch17.html#ch17_why_prefill_decode_disaggregation_1757308075339435">为什么要将预填充与解码解耦？</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch17.html#ch17_advantages_of_disaggregation_1757308075339522">解耦的优势</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch17.html#ch17_disaggregated_prefill_and_decode_cluster_pools_1757308075339703">解耦的预填充与解码集群池</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch17.html#ch17_disaggregated_routing_and_scheduling_policies_1757308075340238">解耦路由与调度策略</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch17.html#ch17_scalability_of_disaggregated_prefill_and_decode_1757308075340687">预填充与解码解耦的可扩展性</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch17.html#ch17_key_takeaways_1757308075340733">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch17.html#ch17_conclusion_1757308075340776">结语</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch18.html#ch18_advanced_prefill_decode_and_kv_cache_tuning_1757308075845302">18. 第 18 章 高级预填充—解码与 KV 缓存调优</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_optimized_decode_kernels_1757308075845515">优化的解码内核</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_flashmla_deepseek_1757308075845578">FlashMLA（DeepSeek）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_thundermla_stanford_1757308075845631">ThunderMLA（Stanford）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_flexdecoding_pytorch_1757308075845683">FlexDecoding（PyTorch）</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_tuning_kv_cache_utilization_and_management_1757308075845744">调优 KV 缓存利用率与管理</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_disaggregated_kv_cache_pool_1757308075845801">解耦的 KV 缓存池</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_kv_cache_reuse_and_prefix_sharing_1757308075845851">KV 缓存复用与前缀共享</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_optimized_kv_cache_memory_layout_1757308075845899">优化 KV 缓存内存布局</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_gpu_and_cpu_gpu_superchip_improvements_1757308075845948">GPU 与 CPU-GPU 超级芯片的改进</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_fast_kv_cache_transfer_between_prefill_and_decode_1757308075845999">在 Prefill 与 Decode 之间快速传输 KV 缓存</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_kv_cache_size_1757308075846048">KV 缓存大小</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_zero_copy_gpu_to_gpu_transfer_1757308075846096">零拷贝 GPU 到 GPU 传输</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_connector_and_data_path_design_1757308075846143">连接器与数据路径设计</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_heterogeneous_hardware_and_parallelism_strategies_1757308075846199">用于 Prefill 和 Decode 的异构硬件与并行策略</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_compute_optimized_versus_memory_optimized_hardware_1757308075846261">计算优化型与内存优化型硬件</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_hybrid_prefill_with_gpu_cpu_collaboration_1757308075846471">GPU-CPU 协作的混合 Prefill</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_slo_aware_request_management_and_fault_tolerance_1757308075846531">SLO 感知的请求管理与容错</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_early_rejection_admission_control_1757308075846583">早期拒绝（准入控制）</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_quality_of_service_qos_1757308075846631">服务质量</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_fault_tolerance_1757308075846678">容错</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_dynamic_scheduling_and_load_balancing_1757308075846731">动态调度与负载均衡</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch18.html#ch18_adaptive_resource_scheduling_and_hotspot_preventio_1757308075846787">自适应资源调度与热点预防</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_key_takeaways_1757308075847031">要点回顾</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch18.html#ch18_conclusion_1757308075847073">结论</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch19.html#ch19_dynamic_and_adaptive_inference_engine_optimization_1757308078896371">19. 第 19 章. 动态与自适应推理引擎优化</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_adaptive_parallelism_strategies_tp_versus_pp_vers_1757308078896675">自适应并行策略（TP、PP 与混合并行）</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_dynamic_precision_changes_fp8_fp4_on_the_fly_1757308078896765">动态精度调整</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_kernel_autotuning_for_transformer_self_attention_a_1757308078896842">Transformer 自注意力和 MLP 路径的内核自动调优</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_dynamic_shared_memory_allocation_and_occupancy_awa_1757308078896908">动态共享内存分配与占用率感知的内核选择</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_speculative_kv_prefetching_for_faster_ttft_1757308078896967">用于加快 TTFT 的推测性 KV 预取</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_real_time_kv_cache_compression_and_policy_switchin_1757308078897026">实时 KV 缓存压缩与策略切换</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_reinforcement_learning_agents_for_tuning_ai_system_1757308078897083">用于运行时调优 AI 系统的强化学习智能体</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_dynamic_memory_allocation_switching_slab_versus_c_1757308078897142">Dynamic Memory-Allocation Switching (Slab Versus Caching Versus Stream-Ordered)</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_runtime_kernel_performance_improvements_and_hot_sw_1757308078897198">Runtime Kernel Performance Improvements and Hot-Swappable Implementations</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_continuous_prewarming_of_cuda_graphs_and_caches_us_1757308078897251">Continuous Prewarming of CUDA Graphs and Caches Using Time-Series Prediction</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_adaptive_batching_and_chunked_prefill_scheduling_1757308078897305">Adaptive Batching and Chunked Prefill Scheduling</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_congestion_aware_and_topology_aware_scheduling_wit_1757308078897371">Congestion-Aware and Topology-Aware Scheduling with Multiple GPUs</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_nvlink_nvswitch_topology_and_bandwidth_constraints_1757308078897445">NVLink/NVSwitch Topology and Bandwidth Constraints</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_real_time_link_telemetry_and_monitoring_1757308078897520">Real-Time Link Telemetry and Monitoring</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_adaptive_process_gpu_mapping_1757308078897571">Adaptive Process-GPU Mapping</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_optimizing_collective_communication_with_nccl_1757308078897623">Optimizing Collective Communication with NCCL</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_multinode_and_multirack_communication_with_gpudire_1757308078897817">Multinode and Multirack Communication with GPUDirect RDMA</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_moe_expert_rebalancing_and_regrouping_1757308078897865">MoE Expert Rebalancing and Regrouping</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_dynamic_congestion_aware_scheduling_1757308078897916">Dynamic Congestion-Aware Scheduling</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_coordinating_nvswitch_transfers_with_fine_tuned_sc_1757308078897967">Coordinating NVSwitch Transfers with Fine-Tuned Scheduling</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_additional_adaptive_and_dynamic_optimization_techn_1757308078898021">Additional Adaptive and Dynamic Optimization Techniques</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_dynamic_early_exit_networks_1757308078898071">Dynamic Early-Exit Networks</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_input_aware_layer_skipping_dash_1757308078898118">Input-Aware Layer Skipping (DASH)</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_speculative_moe_expert_routing_and_communication_r_1757308078898163">Speculative MoE Expert Routing and Communication Reduction</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_dynamic_token_pruning_with_lazyllm_1757308078898208">Dynamic Token Pruning with LazyLLM</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_edge_oriented_moe_memory_budgeting_1757308078898255">Edge-Oriented MoE Memory Budgeting</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch19.html#ch19_dynamic_quantization_and_activation_range_adjustme_1757308078898303">Dynamic Quantization and Activation Range Adjustment</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_key_takeaways_1757308078898350">Key Takeaways</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch19.html#ch19_conclusion_1757308078898398">Conclusion</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="chapter">
+          <a href="ch20.html#ch20_ai_assisted_performance_optimizations_and_scaling_1757308079233118">20. AI-Assisted Performance Optimizations and Scaling Toward Multimillion GPU Clusters</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="ch20.html#ch20_alphatensor_ai_discovered_algorithms_boosting_gpu_1757308079233247">AlphaTensor AI-Discovered Algorithms Boosting GPU Performance (Google DeepMind)</a>
+              <ol>
+                <li data-type="sect2">
+                  <a href="ch20.html#ch20_automated_gpu_kernel_optimizations_with_deepseek_r_1757308079233309">Automated GPU Kernel Optimizations with DeepSeek-R1 (NVIDIA)</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch20.html#ch20_reinforcement_learning_approach_to_generating_opti_1757308079233367">Reinforcement Learning Approach to Generating Optimized GPU Kernels (Predibase)</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch20.html#ch20_self_improving_ai_agents_ai_futures_project_1757308079233423">Self-Improving AI Agents (AI Futures Project)</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch20.html#ch20_smart_compilers_and_automated_code_optimizations_1757308079233498">Smart Compilers and Automated Code Optimizations</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch20.html#ch20_ai_assisted_real_time_system_optimizations_and_clu_1757308079233553">AI-Assisted Real-Time System Optimizations and Cluster Operations</a>
+                </li>
+                <li data-type="sect2">
+                  <a href="ch20.html#ch20_scaling_toward_multimillion_gpu_clusters_and_100_t_1757308079233609">Scaling Toward Multimillion GPU Clusters and 100-Trillion-Parameter Models</a>
+                </li>
+              </ol>
+            </li>
+            <li data-type="sect1">
+              <a href="ch20.html#ch20_key_takeaways_1757308079233663">Key Takeaways</a>
+            </li>
+            <li data-type="sect1">
+              <a href="ch20.html#ch20_conclusion_1757308079233712">Conclusion</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="appendix">
+          <a href="app01.html#appendix_ai_systems_performance_checklist_175_items_1758199772967522">Appendix. AI Systems Performance Checklist (175+ Items)</a>
+          <ol>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_performance_tuning_and_cost_optimization_mindset_1758199772967860">Performance Tuning and Cost Optimization Mindset</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_reproducibility_and_documentation_best_practices_1758199772967923">Reproducibility and Documentation Best Practices</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_system_architecture_and_hardware_planning_1758199772967975">System Architecture and Hardware Planning</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_unified_cpu_gpu_superchip_architecture_1758199772968028">Unified CPU-GPU “Superchip” Architecture</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_multi_gpu_scaling_and_interconnect_optimizations_1758199772968081">Multi-GPU Scaling and Interconnect Optimizations</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_operating_system_and_driver_optimizations_1758199772968130">Operating System and Driver Optimizations</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_gpu_resource_management_and_scheduling_1758199772968181">GPU Resource Management and Scheduling</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_i_o_optimization_1758199772968229">I/O Optimization</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_data_processing_pipelines_1758199772968278">Data Processing Pipelines</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_performance_profiling_debugging_and_monitoring_1758199772968327">Performance Profiling, Debugging, and Monitoring</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_gpu_programming_and_cuda_tuning_optimizations_1758199772968378">GPU Programming and CUDA Tuning Optimizations</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_kernel_scheduling_and_execution_optimizations_1758199772968430">Kernel Scheduling and Execution Optimizations</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_arithmetic_optimizations_and_reduced_mixed_precisi_1758199772968477">Arithmetic Optimizations and Reduced/Mixed Precision</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_advanced_tuning_strategies_and_algorithmic_tricks_1758199772968523">Advanced Tuning Strategies and Algorithmic Tricks</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_distributed_training_and_network_optimization_1758199772968572">Distributed Training and Network Optimization</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_efficient_inference_and_serving_1758199772968622">Efficient Inference and Serving</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_multinode_inference_and_serving_1758199772968669">Multinode Inference and Serving</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_power_and_thermal_management_1758199772968714">Power and Thermal Management</a>
+            </li>
+            <li data-type="sect1">
+              <a href="app01.html#appendix_conclusion_1758199772968758">Conclusion</a>
+            </li>
+          </ol>
+        </li>
+        <li data-type="index">
+          <a href="ix01.html#id703">Index</a>
+        </li>
+        <li data-type="colophon">
+          <a href="colophon01.html#id704">About the Author</a>
+        </li>
+      </ol>
+    </nav>
+  </body>
+</html>

@@ -1,0 +1,1116 @@
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>大规模推理的性能分析、调试与调优</title><link href="epub.css" rel="stylesheet" type="text/css"/>
+<meta content="urn:uuid:21766509-092f-46e2-9672-91f3a159d620" name="Adept.expected.resource"/></head><body data-type="book"><section data-pdf-bookmark="Chapter 16. Profiling, Debugging, and Tuning Inference at Scale" data-type="chapter" epub:type="chapter"><div class="chapter" id="ch16_profiling_debugging_and_tuning_inference_at_scal_1757308074606131">
+      <h1><span class="label">第 16 章　</span>大规模推理的性能分析、调试与<span class="keep-together">调优</span></h1>
+      <p>运营大型 LLM 推理集群需要借助监控和调试工具，确保一切按预期运行。当性能偏离目标时，这些工具还能帮助你快速找出瓶颈。</p>
+      <p>本章将演示如何使用 NVIDIA Nsight Systems 等性能分析工具以及 Prometheus/Grafana 等集群级遥测工具，监控和调试这些复杂系统。我们还会说明如何收集并解读 GPU 利用率、内存压力、尾延迟百分位数、缓存命中率、逐 token 耗时等关键指标。这些指标能够指导推理引擎的性能优化。</p>
+      <p>接下来，我们将讨论运行层面的性能调优，包括在生产环境中得到验证的多种方法，用于优化 GPU 利用率、缩短推理延迟并提高大型集群的吞吐量。其中包括重叠计算与通信、调度请求和组成批次，以及有效利用 NVLink、NVSwitch 和 InfiniBand 等高速互连。 </p>
+      <p>我们还会比较用于推理的实时量化技术，包括使用广义训练后量化（Generalized Post-Training Quantization，GPTQ）和激活感知权重量化（Activation-Aware Weight Quantization，AWQ）等实现，将模型压缩到 8 位和 4 位精度的方法。在此过程中，我们会讨论仅量化权重与同时量化权重和激活值之间的权衡，并给出在服务流水线中应用量化的实践指导，以便在保持模型准确率的同时减少内存用量并提高吞吐量。</p>
+      <p>最后，我们将考察能够配合底层性能调优的应用层优化，包括提示词压缩、前缀缓存、去重、查询路由（例如使用后备模型）和部分输出流式传输等策略。 </p>
+      <section data-pdf-bookmark="Profiling, Debugging, and Tuning Inference Performance" data-type="sect1"><div class="sect1" id="ch16_profiling_debugging_and_tuning_inference_perform_1757308074606403">
+        <h1>分析、调试与调优推理性能</h1>
+        <p>现代 LLM 推理引擎中有许多相互配合的组件<a contenteditable="false" data-primary="inference" data-secondary="tuning performance" data-tertiary="observe-hypothesize-tune loop" data-type="indexterm" id="ch16oht"/><a contenteditable="false" data-primary="performance metrics" data-secondary="inference tuning" data-tertiary="observe-hypothesize-tune loop" data-type="indexterm" id="ch16oht2"/>，采用解耦式预填充和解码时尤其如此。一个典型请求的生命周期涉及许多组件，如<a data-type="xref" href="#ch16_figure_1_1757308074576418">图 16-1</a>所示。</p>
+        <figure><div class="figure" id="ch16_figure_1_1757308074576418">
+          <img alt="展示解耦预填充和解码 LLM 推理系统中请求生命周期的示意图，说明编排器与预填充实例之间为 token 管理和缓存处理进行的交互。" src="assets/aisp_1601.png"/>
+          <h6><span class="label">图 16-1　</span>解耦式预填充和解码 LLM 推理系统中典型请求的生命周期</h6>
+        </div></figure>
+        <p>面对这样的复杂性，推理性能调优是一项高度迭代的工作，需要细致调节并持续验证。 </p>
+        <p>首先，应观察指标并找出当前瓶颈，例如 GPU 未得到充分利用或延迟高于预期。接着提出改进假设，如“增大批大小”或“提高操作 X 的通信—计算重叠程度”。然后实施修复并检验这一假设。 </p>
+        <p>之后，最好在预发布环境中使用具有代表性的工作负载测试修复方案，并借助性能分析工具验证更改是否符合预期。例如，可以验证某项操作是否正确实现了内存操作与计算的重叠。</p>
+        <p>最后，应将修复部署到生产环境，并监控 Grafana 和日志，以验证它是否改善了真实工作负载下的吞吐量和延迟。每当出现新瓶颈，就重复这一流程。</p>
+        <p>这种“观察—假设—调优”循环应持续进行。现代部署通常会自动执行这些步骤。例如，可以利用定期负载测试以及随后针对关键指标的异常检测来触发调优流程。</p>
+        <div data-type="tip">
+          <p>将优化部署到生产环境时，建议采用金丝雀发布，包括更新推理运行时和模型变体。先把优化应用于少量服务器承载的一小部分流量，便可在面向所有最终用户全面部署之前验证其效果。这种渐进式方法能够及早发现意外副作用，同时避免影响全部用户，从而缩小故障的“爆炸半径”。 </p>
+        </div>
+        <p>设想这样一种场景：由于分词或推理数据预处理的工作量过大，主机端 CPU 利用率骤升至 100%。这会限制推理引擎能够处理的并发流数量。一种修复办法是使用 GPU 加速的分词器库，或使用 CUDA 或 OpenAI Triton 语言编写自定义 GPU 内核，把预处理迁移到 GPU。</p>
+        <p>部署新库或新内核后，应对比监控更改前后的 CPU 利用率。如果 CPU 利用率下降而总体吞吐量上升，就说明系统不再受基于 CPU 的输入预处理所限。</p>
+        <p>还应关注各种缓存的命中率<a contenteditable="false" data-primary="caching mechanisms" data-secondary="metrics for cache hits and misses" data-type="indexterm" id="id3825"/><a contenteditable="false" data-primary="performance metrics" data-secondary="cache hits and misses" data-type="indexterm" id="id3826"/>，包括前缀缓存、提示词嵌入缓存和 KV 缓存。系统应提供“缓存命中”和“缓存未命中”指标。缓存命中率高，说明系统能够有效复用数据；反之，如果未命中率很高，通常就需要调整缓存大小、淘汰策略或缓存策略，以尽可能提高命中率。 </p>
+        <p>vLLM 的 <a href="https://lmcache.ai">LMCache 组件</a>支持<a contenteditable="false" data-primary="vLLM" data-secondary="LMCache" data-type="indexterm" id="id3827"/><a contenteditable="false" data-primary="caching mechanisms" data-secondary="vLLM LMCache" data-type="indexterm" id="id3828"/><a contenteditable="false" data-primary="LMCache (vLLM)" data-type="indexterm" id="id3829"/>调整 GPU 缓存与 CPU 缓存的比例。如果由于 GPU 内存限制而频繁未命中，可以启用其分页缓存卸载功能，让 CPU 分担缓存工作。务必确保缓存淘汰策略（最近最少使用 [LRU]、最不经常使用 [LFU] 等）符合实际访问模式。</p>
+        <p>另一种场景是使用 KV 缓存复用同一批请求中相同输入序列前缀的数据，从而避免重新计算该前缀的 KV。<a contenteditable="false" data-primary="performance metrics" data-secondary="prefix-merge metrics" data-type="indexterm" id="id3830"/><a contenteditable="false" data-primary="KV cache" data-secondary="prefix merge events" data-type="indexterm" id="id3831"/>此时需要测量请求共享前缀的频率。共享前缀会产生一次<em>前缀合并</em>事件，并增加 vLLM 中的前缀缓存指标，包括 <code>vllm:gpu_prefix_cache_queries</code> 和 <code>vllm:gpu_prefix_cache_hits</code>。例如，可以用命中次数除以查询次数来计算命中率。</p>
+        <p>测量前缀合并率，有助于将其与实际缓存命中率关联起来，评估缓存层带来的真实收益。由此可以调整批处理和调度策略，尽可能增加共享前缀，并预测不同工作负载下端到端吞吐量和延迟的改善幅度。</p>
+        <p>可以让推理引擎运行合成数据，用包含大量重复前缀的提示词进行测试。如果前缀合并生效，预填充计算量应当有所下降。</p>
+        <p>vLLM 和 SGLang 等现代 LLM 推理引擎原生提供前缀合并相关指标。不过，如果推理引擎没有把前缀合并作为一等指标导出，就应插桩添加“前缀去重 token 数”的自定义计数器，以监控其效果。 </p>
+        <div data-type="tip">
+          <p>如果前缀合并没有达到预期效果，应检查前缀匹配逻辑是否失效。调试时先检查分词器是否存在差异，因为这通常是前缀匹配问题的主要原因。 </p>
+        </div>
+        <p>除了分析性能，监控还有助于容量规划。通过跟踪利用率和延迟随负载增长而发生的变化，可以推测系统何时会触及某项限制，例如 p95（第 95 百分位）延迟何时开始急剧上升。在这种情况下，动态批大小可能已经增大到边际收益递减的阶段。 </p>
+        <div data-type="tip">
+          <p>如果采用分层缓存策略，包括基于 NVMe 的 KV 缓存扩展，务必监控设备的 I/O 延迟。I/O 延迟过高会显著降低缓存<span class="keep-together">性能</span>。 </p>
+        </div>
+        <p>当单 GPU 并发度达到上限，继续增大批大小也无法提高吞吐量时，可以考虑横向扩展：增加 GPU、部署更多模型副本，或增加专家数量，把工作分散到更多计算单元上。</p>
+        <p>在横向扩展之前，还应考虑压缩模型或切换到较低精度（FP8/FP4），以提高每块 GPU 的有效吞吐量。不过，一旦硬件已经饱和（例如 SM 利用率达到 100%，内存带宽利用率接近<span class="keep-together">峰值</span>），要进一步提高吞吐量，通常只能增加 GPU，或采用张量并行/流水线并行。</p>
+        <p>同时务必权衡新硬件的成本与效率收益。有时，升级到内存容量更大、FLOPS 更高的新一代 GPU，会比横向扩展一批旧 GPU 更具成本效益。 </p>
+        <p>增加专家数量可以提高吞吐量上限，但前提是同时改进专家路由和调度，以应对额外的全对全通信。否则，简单扩展可能只是把瓶颈转移到网络。下面讨论监控，以及如何验证优化工作是否真正取得了成效。<a contenteditable="false" data-primary="" data-startref="ch16oht" data-type="indexterm" id="id3832"/><a contenteditable="false" data-primary="" data-startref="ch16oht2" data-type="indexterm" id="id3833"/></p>
+        <section data-pdf-bookmark="Monitoring System Metrics and Counters" data-type="sect2"><div class="sect2" id="ch16_monitoring_system_metrics_and_counters_1757308074606483">
+          <h2>监控系统指标和计数器</h2>
+          <p>传统微服务调用<a contenteditable="false" data-primary="monitoring" data-secondary="inference system metrics and counters" data-type="indexterm" id="ch16moninf"/><a contenteditable="false" data-primary="inference" data-secondary="tuning performance" data-tertiary="monitoring system metrics and counters" data-type="indexterm" id="ch16moninf2"/><a contenteditable="false" data-primary="performance metrics" data-secondary="inference tuning" data-tertiary="monitoring system metrics and counters" data-type="indexterm" id="ch16moninf3"/><a contenteditable="false" data-primary="LLM request nonuniformity" data-type="indexterm" id="id3834"/>的执行时间相对一致且可预测，而 LLM 请求并不均匀，延迟可能相差悬殊。<a data-type="xref" href="#ch16_figure_2_1757308074576450">图 16-2</a>展示了这种差异。</p>
+          <figure><div class="figure" id="ch16_figure_2_1757308074576450">
+            <img alt="比较传统微服务调用（快速且均匀）与 LLM 请求（缓慢、不均匀且昂贵）的示意图，突出需要 LLM 感知的负载均衡。" src="assets/aisp_1602.png"/>
+            <h6><span class="label">图 16-2　</span>传统微服务调用与 LLM <span class="keep-together">调用的差异</span></h6>
+          </div></figure>
+          <p>在生产环境中进行持续监控时，<a contenteditable="false" data-primary="Prometheus" data-secondary="inference monitoring" data-type="indexterm" id="id3835"/><a contenteditable="false" data-primary="Grafana dashboards" data-secondary="inference monitoring" data-type="indexterm" id="id3836"/><a contenteditable="false" data-primary="GPUs" data-secondary="bottlenecks profiled and diagnosed" data-tertiary="monitoring in production" data-type="indexterm" id="id3837"/>通常使用 Prometheus 从各个 GPU 计算节点收集指标，再通过 Grafana 仪表板进行可视化。需要跟踪的关键 GPU 指标包括 GPU 利用率（SM 处于忙碌状态的时间百分比）、GPU 内存用量、复制引擎利用率、PCIe 和 NVLink 吞吐量，以及 GPU 温度和功耗（例如是否发生降频）。注意：L1/L2 活动、占用率和指令吞吐量等底层计数器，应使用 Nsight Compute 或 CUPTI 收集，而不是依赖 DCGM 和 Prometheus。 </p>
+          <div data-type="tip">
+            <p><code>cudaMemPool</code> 指标和异步<a contenteditable="false" data-primary="memory" data-secondary="fragmentation monitoring" data-type="indexterm" id="id3838"/><a contenteditable="false" data-primary="monitoring" data-secondary="memory fragmentation" data-type="indexterm" id="id3839"/><a contenteditable="false" data-primary="cudaMemPool" data-type="indexterm" id="id3840"/>分配器统计信息有助于监控内存碎片。应把它们纳入监控体系，这会显著方便生产环境中的系统性能问题调试。 </p>
+          </div>
+          <p>监控互连利用率同样重要，包括 NVLink、NVSwitch 带宽和 NIC 吞吐量。这样才能发现多 GPU、多节点集群配置中的通信瓶颈。</p>
+          <p>NVIDIA 数据中心 GPU 管理器（DCGM）公开了<a contenteditable="false" data-primary="Data Center GPU Manager (DCGM; NVIDIA)" data-secondary="inference monitoring" data-type="indexterm" id="id3841"/><a contenteditable="false" data-primary="Blackwell GPU (NVIDIA)" data-secondary="Data Center GPU Manager" data-tertiary="inference monitoring" data-type="indexterm" id="id3842"/><a contenteditable="false" data-primary="Prometheus" data-secondary="inference monitoring" data-tertiary="Data Center GPU Manager metrics" data-type="indexterm" id="id3843"/>许多可供 Prometheus 抓取和收集的 GPU 指标。例如，DCGM 提供表示 SM 利用率百分比的 <code>DCGM_FI_DEV_GPU_UTIL</code>、表示内存复制引擎利用率的 <code>DCGM_FI_DEV_MEM_COPY_UTIL</code>，以及表示已用帧缓冲区内存的 <code>DCGM_FI_DEV_FB_USED</code> 等指标。 </p>
+          <p>DCGM 提供 NVLink 错误计数器，并能在某些平台和驱动程序版本上公开吞吐量计数器。若要观察持续的链路利用率，还应使用 <code>nvidia-smi nvlink</code> 和 Nsight 工具。应把这些指标集成到仪表板中并设置告警，以便识别网络何时因跨 GPU、跨节点的通信流量而饱和。DCGM 还会跟踪 Xid 计数器和严重 GPU 错误。 </p>
+          <div data-type="tip">
+            <p>虽然 DCGM 提供 NVLink 计数器，但截至本书写作时，<code>dcgm-exporter</code> 并不会默认在所有平台上公开逐链路带宽。因此，如果需要链路级吞吐量，可能需要直接查询 DCGM 或扩展 exporter。</p>
+          </div>
+          <p>还建议收集高层应用指标，例如每秒查询数/请求数、平均延迟和 p95/p99 延迟、活动上下文数量，以及以 token/s 表示的吞吐量。KV 缓存利用率和容量（总体及逐节点）也是极为重要的监控指标。</p>
+          <p>可以部署 Prometheus node exporter<a contenteditable="false" data-primary="Prometheus" data-secondary="inference monitoring" data-type="indexterm" id="id3844"/>，从每个节点采集所有这些指标，把数据汇集到一处，甚至还能针对关键阈值设置告警。<a contenteditable="false" data-primary="Grafana dashboards" data-secondary="inference monitoring" data-type="indexterm" id="id3845"/>随后，Grafana 可以把这些指标绘制到实时仪表板中，供团队共享。例如，<a data-type="xref" href="#ch16_figure_3_1757308074576470">图 16-3</a>展示了如何从 Kubernetes 集群的各个 GPU 收集指标、将其导出到 Prometheus，再使用 Grafana 进行可视化。 </p>
+          
+          <p>这样一来，例如部署旨在扩大批处理的新优化后，Grafana 会立即显示各 GPU 的利用率是否上升。还可以通过监控确认 p95/p99 延迟仍处于目标范围内。</p>
+          <p>计数器同样非常有用，尤其适合动态自适应系统。例如，如果推理引擎会根据当前条件动态调整批大小，就可以在每次调整时递增“批大小变更”计数器。 </p>
+          <figure><div class="figure" id="ch16_figure_3_1757308074576470">
+            <img alt="展示 DCGM 如何从 Kubernetes Pod 收集 GPU 指标并导出到 Prometheus 的示意图，流程中显示服务监控器、节点导出器等组件。" src="assets/aisp_1603.png"/>
+            <h6><span class="label">图 16-3　</span>DCGM 从 Kubernetes GPU 节点收集指标并将其发送到 Prometheus</h6>
+          </div></figure>
+          <p>另一种选择是把变更写入日志文件，但之后需要进行缓慢的文本搜索和聚合，例如使用 Apache Spark 离线分析日志；随后还必须手动把日志分析结果与 Prometheus 指标关联起来。 </p>
+          <p>如果为值得关注的应用层事件（包括错误）设置简单计数器并递增计数，数据就会推送到 Prometheus，并能与其他所有指标一起实时显示在 Grafana 仪表板中。此外，还应考虑对关键事件采用结构化日志和分布式追踪。 </p>
+          <p>现代应用性能管理（APM）<a contenteditable="false" data-primary="application performance management (APM)" data-type="indexterm" id="id3846"/>工具以及 <span class="keep-together">OpenTelemetry 可以</span>摄取这些日志和追踪，并将其与指标关联起来，从而提供覆盖整个系统、时间线一致的事件视图。掌握这条时间线有助于缩短性能问题的调试时间。</p>
+          <p>持续监控这些指标，就能判断下一步应在哪里调优。例如，如果 GPU 利用率低于预期，可以检查 GPU 内存是否已经用满。若尚未充分利用，则可尝试增大批大小或最大并发请求数。不过，务必留意延迟服务级别目标（SLO），不能超过这些目标。</p>
+          <div data-type="tip">
+            <p>现代推理服务器为动态批处理提供<a contenteditable="false" data-primary="latency" data-secondary="maximum latency for dynamic batching" data-type="indexterm" id="id3847"/>“最大延迟”设置。应调节该设置以满足 SLO。提高此值可以增大批大小（从而提高吞吐量），但提高过多会损害 p99 延迟。应根据延迟目标持续调整。 </p>
+          </div>
+          <p>相反，如果 GPU 内存接近上限，推理引擎可能开始把不活跃的 KV 缓存数据换出到主机 CPU 内存或 NVMe 存储。由于 GPU 必须等待来自较慢 CPU 内存或磁盘的额外数据传输，其利用率会随之下降。</p>
+          <div data-type="tip">
+            <p>如果发现 GPU 内存复制引擎利用率骤升，或在 SM 利用率较低的同时出现异常 NVLink 利用率，那么推理引擎很可能正在 GPU 内存中换入、换出 KV 缓存数据。过高的数据传输延迟会因此成为系统瓶颈。 </p>
+          </div>
+          <p>如果确实发生了换页，可以调整推理引擎的分页参数以减少抖动，应用 FP8 或 FP4 量化，增加分配给缓存的 GPU 内存，并视情况改变换页策略。这样应能降低复制引擎利用率并提高计算利用率，这正是期望看到的结果。</p>
+          <p>Grafana 也可用于跟踪延迟。可以绘制端到端请求延迟的分布，通常还会分别测量预填充延迟和逐 token 延迟。如果 p99 延迟在某些时段骤升，应将其与 GPU 指标和其他日志进行关联分析。</p>
+          <p>例如，p99 延迟骤升可能与 GPU 利用率下降的时段相吻合。延迟峰值也可能对应某次流量激增：流量激增触发了更大的动态批大小，导致该时段延迟升高。为验证这一点，可以在 Grafana 仪表板的延迟图上叠加 RPS（每秒请求数），观察两张曲线图是否相关。</p>
+          <p>如果按照假设，峰值确实源于批大小的动态增加，而且属于预期现象，仍需确认它没有超出服务级别协议（SLA）。如果超出，可以尝试缩短请求批次的最大排队延迟，或减小最大批大小，以限制延迟。</p>
+          <p>日志对于诊断<a contenteditable="false" data-primary="logging" data-secondary="inference monitoring" data-type="indexterm" id="id3848"/>问题也极具价值。应在代码中插桩，记录批次形成、通信开始/结束等关键事件。最好使用 <code>DEBUG</code> 级别，以便按需启用或禁用，避免影响请求—响应延迟。 </p>
+          <p>启用调试日志后，可以看到文本形式的逐步时间线。在一次调试过程中，通常会结合使用日志时间线和 Prometheus/Grafana 指标。例如，可以查看全对全通信耗时超过 5 ms 的频率。 </p>
+          <p>结合日志时间线和指标，可以发现网络问题等异常值；这类问题可能拖慢某一轮全对全通信交换。如果问题持续发生，可以提高专家容量因子，让超额 token 自动溢出到第二专家副本；理想情况下，该副本应位于网络路径更稳定的 GPU 上。这样可以平衡负载并尽量降低延迟。</p>
+          <div data-type="tip">
+            <p>实践中常把容量因子设为 1.2～1.5；这样主专家过载时，便可重新分配额外 20%～50% 的 token。在具体实现确实支持溢出路由且备用专家有可用容量的前提下，这有助于平滑 MoE 推理的尾延迟。与其让请求排在互连性能下降、略有停顿的 GPU 专家之后，不如将其溢出到第二专家。不过，这些容量因子并非通用最优值，额外副本、路由策略及通信开销会决定实际收益。<a contenteditable="false" data-primary="" data-startref="ch16moninf" data-type="indexterm" id="id3849"/><a contenteditable="false" data-primary="" data-startref="ch16moninf2" data-type="indexterm" id="id3850"/><a contenteditable="false" data-primary="" data-startref="ch16moninf3" data-type="indexterm" id="id3851"/> </p>
+          </div>
+          </div></section>
+        
+        <section data-pdf-bookmark="Profiling with Nsight Systems and Nsight Compute" data-type="sect2"><div class="sect2" id="ch16_profiling_with_nsight_systems_and_nsight_compute_1757308074606544">
+          <h2>使用 Nsight Systems 和 Nsight Compute 进行性能分析</h2>
+          <p>开发和调优推理代码时，<a contenteditable="false" data-primary="inference" data-secondary="tuning performance" data-tertiary="profiling with Nsight" data-type="indexterm" id="ch16ns"/><a contenteditable="false" data-primary="performance metrics" data-secondary="inference tuning" data-tertiary="profiling with Nsight" data-type="indexterm" id="ch16ns2"/><a contenteditable="false" data-primary="profiling" data-secondary="inference" data-type="indexterm" id="ch16ns3"/><a contenteditable="false" data-primary="Nsight Systems" data-secondary="inference profiling" data-type="indexterm" id="ch16nsprof"/>可以使用 Nsight Systems 捕获横跨 CPU 和 GPU 的工作负载追踪。Nsight Systems 提供微秒级时间线视图，其中显示 CPU 线程、GPU 内核、CUDA 事件、NCCL 通信等活动。</p>
+          <p>通过在代码中加入 NVTX 标注，可以在时间线上清晰标出“预填充阶段”“解码步骤”或“全对全通信”等区间。下面的代码使用 NVTX v3 C API 的显式区间压栈和出栈操作，在示例预填充和解码步骤周围设置 NVTX 区间标记：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="c1">// Example C++ snippet with NVTX annotations using the C API.</code>
+
+<code class="cp">#include</code><code class="w"> </code><code class="cpf">&lt;nvtx3/nvToolsExt.h&gt;</code><code class="c1">   // or &lt;nvToolsExt.h&gt;</code><code class="cp"/>
+<code class="cp">#include</code><code class="w"> </code><code class="cpf">"my_model.hpp"</code><code class="c1">         // Your model’s C++ interface</code><code class="cp"/>
+<code class="cp">#include</code><code class="w"> </code><code class="cpf">&lt;vector&gt;</code><code class="cp"/>
+
+<code class="c1">// Small helpers to keep callsites tidy.</code>
+<code class="cp">#define NVTX_PUSH(name, argb)                                           \</code>
+<code class="cp">  do {                                                                  \</code>
+<code class="cp">    nvtxEventAttributes_t a{};                                          \</code>
+<code class="cp">    a.version = NVTX_VERSION;                                           \</code>
+<code class="cp">    a.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;                             \</code>
+<code class="cp">    a.colorType = NVTX_COLOR_ARGB;                                      \</code>
+<code class="cp">    a.color = (unsigned int)(argb);                                     \</code>
+<code class="cp">    a.messageType = NVTX_MESSAGE_TYPE_ASCII;                            \</code>
+<code class="cp">    a.message.ascii = (name);                                           \</code>
+<code class="cp">    nvtxRangePushEx(&amp;a);                                                \</code>
+<code class="cp">  } while (0)</code>
+
+<code class="cp">#define NVTX_POP() do { nvtxRangePop(); } while (0)</code>
+
+<code class="k">struct</code><code class="w"> </code><code class="nc">Token</code><code class="w"> </code><code class="p">{</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">id</code><code class="p">;</code><code class="w"> </code><code class="p">};</code><code class="w"/>
+
+<code class="kt">void</code><code class="w"> </code><code class="nf">run_inference</code><code class="p">(</code><code class="w"/>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="n">std</code><code class="o">::</code><code class="n">vector</code><code class="o">&lt;</code><code class="n">Token</code><code class="o">&gt;&amp;</code><code class="w"> </code><code class="n">prompt_tokens</code><code class="p">,</code><code class="w"/>
+<code class="w">    </code><code class="n">Model</code><code class="o">&amp;</code><code class="w"> </code><code class="n">model</code><code class="p">,</code><code class="w"/>
+<code class="w">    </code><code class="kt">int</code><code class="w"> </code><code class="n">num_generate_steps</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">  </code><code class="c1">// Prefill</code>
+<code class="w">  </code><code class="n">NVTX_PUSH</code><code class="p">(</code><code class="s">"Prefill"</code><code class="p">,</code><code class="w"> </code><code class="mh">0xFF4F86F7</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">model</code><code class="p">.</code><code class="n">encode</code><code class="p">(</code><code class="n">prompt_tokens</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">NVTX_POP</code><code class="p">();</code><code class="w"/>
+
+<code class="w">  </code><code class="c1">// Decode one token at a time</code>
+<code class="w">  </code><code class="k">for</code><code class="w"> </code><code class="p">(</code><code class="kt">int</code><code class="w"> </code><code class="n">t</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="n">t</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">num_generate_steps</code><code class="p">;</code><code class="w"> </code><code class="o">++</code><code class="n">t</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="n">NVTX_PUSH</code><code class="p">(</code><code class="s">"Decode"</code><code class="p">,</code><code class="w"> </code><code class="mh">0xFFFF8C00</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">Token</code><code class="w"> </code><code class="n">next_token</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">model</code><code class="p">.</code><code class="n">decode_next</code><code class="p">();</code><code class="w"/>
+<code class="w">    </code><code class="c1">// ... (sampling / streaming to client)</code>
+<code class="w">    </code><code class="n">NVTX_POP</code><code class="p">();</code><code class="w"/>
+<code class="w">  </code><code class="p">}</code><code class="w"/>
+<code class="p">}</code><code class="w"/></pre>
+
+          <p>这里使用 <code>nvtxRangePushEx</code>/<code>nvtxRangePop</code> 显式标记区间。在 <code>model.encode(...)</code> 之前立即压入 <code>"Prefill"</code> 区间，并在其后弹出；在 <code>decode</code> 循环中，每次迭代开始时压入 <code>"Decode"</code>，在 <code>model.decode_next()</code> 之后弹出。小型 <code>NVTX_PUSH</code>/<code>NVTX_POP</code> 辅助宏还会附加颜色（十六进制值）和文本。这既能减少时间线可视化中的标记错配，又能保持调用点简洁。代码中清晰可见的压入/弹出配对也便于审计。</p>
+
+          <p>这些彩色块标注会出现在 Nsight Systems 的 GPU 活动时间线上，并标记为 <code>"Prefill"</code> 和 <code>"Decode"</code>。这样很容易看出每个阶段持续多久，以及各阶段如何与通信操作重叠，从而发现 GPU 空闲间隙和意外同步等问题。 </p>
+          <div data-type="tip">
+            <p>注意，这里直接使用 NVTX C API（<code>nvToolsExt</code>），而不是 PyTorch 的 <code>record_function()</code>。这样可以在纯 C++ 运行时中标注热点路径，并确保从 Python 或其他语言启动工作时标记保持一致。</p>
+          </div>
+        
+          <p>将范围收紧到 <code>model.encode(prompt_tokens)</code> 周围所需的最小区间后，性能分析标记就能准确覆盖预填充工作，而不会包含其他代码。这会提高追踪的清晰度并改善性能诊断。<a contenteditable="false" data-primary="" data-startref="ch16nsprof" data-type="indexterm" id="id3852"/> </p>
+          
+<p>在多个 CUDA 流上排队工作时，应使用逐流区间（例如为 H2D/D2H 复制设置专用的“transfer”流，为内核设置“compute”流）。具体而言，可以用不同的 NVTX 区间包围每个流对应的主机端代码。</p>
+
+<p class="fix_tracking">例如，可以使用 <code>nvtxNameCudaStreamA(transfer_stream, "transfer_stream")</code> 和 <code>nvtxNameCudaStreamA(compute_stream, "compute_stream")</code> 为流命名。然后，在内存复制/传输周围使用 <code>nvtxRangePushA("transfer_stream")</code> 和 <code>nvtxRangePop()</code>，在内核启动周围使用 <code>nvtxRangePushA("compute_stream")</code> 和 <code>nvtxRangePop()</code>。</p>
+
+<p>使用带 NVTX 名称的流后，Nsight Systems 时间线会清楚显示操作是否发生重叠。下面的代码展示了如何把这些内容组合起来：</p>
+
+<pre data-code-language="cpp" data-type="programlisting"><code class="c1">// One-time after creating the streams</code>
+<code class="n">nvtxNameCudaStreamA</code><code class="p">(</code><code class="n">transfer_stream</code><code class="p">,</code><code class="w"> </code><code class="s">"transfer_stream"</code><code class="p">);</code><code class="w"/>
+<code class="n">nvtxNameCudaStreamA</code><code class="p">(</code><code class="n">compute_stream</code><code class="p">,</code><code class="w">  </code><code class="s">"compute_stream"</code><code class="p">);</code><code class="w"/>
+
+<code class="c1">// Around H2D/D2H copies (transfer stream)</code>
+<code class="n">nvtxRangePushA</code><code class="p">(</code><code class="s">"transfer_stream"</code><code class="p">);</code><code class="w"/>
+<code class="n">cudaMemcpyAsync</code><code class="p">(</code><code class="n">h_logits</code><code class="p">,</code><code class="w"> </code><code class="n">d_logits</code><code class="p">,</code><code class="w"> </code><code class="n">bytes</code><code class="p">,</code><code class="w"> </code><code class="n">cudaMemcpyDeviceToHost</code><code class="p">,</code><code class="w"> </code>
+<code class="w">                </code><code class="n">transfer_stream</code><code class="p">);</code><code class="w"/>
+<code class="n">nvtxRangePop</code><code class="p">();</code><code class="w"/>
+
+<code class="c1">// Around kernel enqueues (compute stream)</code>
+<code class="n">nvtxRangePushA</code><code class="p">(</code><code class="s">"compute_stream"</code><code class="p">);</code><code class="w"/>
+<code class="n">my_kernel</code><code class="o">&lt;&lt;&lt;</code><code class="n">grid</code><code class="p">,</code><code class="w"> </code><code class="n">block</code><code class="p">,</code><code class="w"> </code><code class="mi">0</code><code class="p">,</code><code class="w"> </code><code class="n">compute_stream</code><code class="o">&gt;&gt;&gt;</code><code class="p">(...);</code><code class="w"/>
+<code class="n">nvtxRangePop</code><code class="p">();</code><code class="w"/></pre>
+
+          <p>这里为各个流命名，并用逐流区间包围排队点，使 Nsight 时间线保持易读。需要注意，NVTX 区间标注的是主机线程时间线；GPU 轨道则按流显示内核和 <code>memcpy</code> 操作。为流命名有助于在分析时把主机端区间对应到正确的 GPU 轨道。</p>
+          
+          <p>Nsight Compute 可以分析单个内核<a contenteditable="false" data-primary="Nsight Compute" data-secondary="inference profiling" data-type="indexterm" id="id3853"/>，从而定位效率低下之处。可以利用 Nsight Compute 基于 section 的性能分析功能，专注于内核的特定部分，例如内存事务。 </p>
+          <p>另一个非常有用但并不广为人知<a contenteditable="false" data-primary="Nsight Compute" data-secondary="inference profiling" data-tertiary="CUDA Program Counter Sampling" data-type="indexterm" id="id3854"/><a contenteditable="false" data-primary="Nsight Compute" data-secondary="CUDA Program Counter Sampling" data-type="indexterm" id="id3855"/><a contenteditable="false" data-primary="CUDA Program Counter Sampling (Nsight Compute)" data-type="indexterm" id="id3856"/>的工具，是 Nsight Compute 的 CUDA <a href="https://oreil.ly/Ze2Jj">程序计数器（PC）采样功能</a>。如<a data-type="xref" href="#ch16_figure_4_1757308074576495">图 16-4</a>所示，它可以采样程序计数器并识别热点，而不需要完整且开销很大的插桩。 </p>
+          <figure><div class="figure" id="ch16_figure_4_1757308074576495">
+            <img alt="展示 Nsight Compute CUDA 程序计数器采样功能流程的示意图，显示用户、主机进程、应用进程和 CUDA 组件之间的交互。" src="assets/aisp_1604.png"/>
+            <h6><span class="label">图 16-4　</span>Nsight Compute 的 CUDA 程序计数器（PC）采样功能能够以低开销方式识别热点（来源：<a href="https://oreil.ly/DyKWR"><em class="hyperlink">https://oreil.ly/DyKWR</em></a>）</h6>
+          </div></figure>
+          <p class="pagebreak-before">具体而言，可以使用它分析正在运行的推理服务器，准确定位哪些内核指令耗时最多，而且开销很低。既然已经介绍了使用 Nsight Systems 和 Nsight Compute 进行性能分析，下面讨论一些常见的推理故障排查方法。<a contenteditable="false" data-primary="" data-startref="ch16ns" data-type="indexterm" id="id3857"/><a contenteditable="false" data-primary="" data-startref="ch16ns2" data-type="indexterm" id="id3858"/><a contenteditable="false" data-primary="" data-startref="ch16ns3" data-type="indexterm" id="id3859"/></p>
+          
+          
+<div data-type="tip">
+      <p>在对线上生产服务进行调查时，建议先使用程序计数器采样，以极低开销定位热点。只有当采样结果指向某个特定内核或阶段时，再切换到完整追踪。</p>
+</div>
+        </div></section>
+        <section data-pdf-bookmark="Inference Troubleshooting Recipes" data-type="sect2"><div class="sect2" id="ch16_inference_troubleshooting_recipes_1757308074606600">
+          <h2>推理故障排查方法</h2>
+          <p>在生产环境中，持续运行高开销性能分析器并不现实<a contenteditable="false" data-primary="inference" data-secondary="tuning performance" data-tertiary="troubleshooting" data-type="indexterm" id="id3860"/><a contenteditable="false" data-primary="performance metrics" data-secondary="inference tuning" data-tertiary="troubleshooting" data-type="indexterm" id="id3861"/><a contenteditable="false" data-primary="troubleshooting inference" data-type="indexterm" id="id3862"/><a contenteditable="false" data-primary="monitoring" data-secondary="inference system metrics and counters" data-tertiary="production environment" data-type="indexterm" id="id3863"/><a contenteditable="false" data-primary="profiling" data-secondary="inference" data-tertiary="production environment" data-type="indexterm" id="id3864"/>。因此，需要依靠轻量级、基于指标的监控来检测异常并指导针对性修复，例如 GPU SM 利用率、KV 缓存警告、尾延迟百分位数、缓存命中率和 OOM 告警。当某个指标越过特定阈值时，可以针对其根因形成假设，例如批大小过小、KV 缓存不足、路由热点、分片不均衡或内存超额分配等。 </p>
+          <p>然后实施修复，例如调节批大小、提高内存利用率上限（如果可行）、调整路由器阈值或启用 CPU 卸载。推送修复后，应验证其影响，并确认指标已经回落到阈值以下。<a data-type="xref" href="#ch16_table_1_1757308074586136">表 16-1</a>列出了常见生产问题的一些关键指标、症状、可能原因和建议修复措施。</p>
+          <table id="ch16_table_1_1757308074586136">
+            <caption><span class="label">表 16-1　</span>常见故障症状、原因和建议措施</caption>
+            <thead>
+              <tr>
+                <th>指标/症状</th>
+                <th>可能原因</th>
+                <th>建议措施</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  SM utilization &lt; 50%
+                </td>
+                <td>批次过小或缺少融合内核</td>
+                <td>增大批大小，启用融合内核（FlashAttention 或 PyTorch 中由 cuDNN 融合的 <code>scaled_dot_product_attention</code>（SDPA）后端），或添加自定义融合内核（例如使用 Triton）；然后用 <code>nsys --trace=cuda</code> 进行性能分析。</td>
+              </tr>
+              <tr>
+                <td>
+                  KV 缓存抢占警告
+                </td>
+                <td>KV 缓存空间不足（vLLM）</td>
+                <td>提高 GPU 内存利用率阈值，减少批处理中 token 的最大数量，并考虑使用 PagedAttention 动态分配 KV。</td>
+              </tr>
+              <tr>
+                <td>
+                  尾延迟高（p95 &gt; 200 ms）
+                </td>
+                <td>解码节点热点或队头阻塞</td>
+                <td>检查路由器日志中的路由模式；调节预取阈值；启用推测解码路径。</td>
+              </tr>
+              <tr>
+                <td>
+                  负载下缓存命中率 &lt; 60%
+                </td>
+                <td>分片放置不均衡或缺少前缀缓存</td>
+                <td>验证前缀缓存连接器配置（例如 vLLM 的 LMCache NIXL 和 NVIDIA Dynamo 的 NIXL 连接器），必要时增加前缀缓存 TTL 或副本数量。</td>
+              </tr>
+              <tr>
+                <td>
+                  多租户 GPU 上意外 OOM
+                </td>
+                <td>GPU 内存超额分配</td>
+                <td>降低每个实例的 GPU 内存利用率，启用 CPU/NVMe 卸载，并将进程绑定到 CPU 套接字以减少跨套接字流量。</td>
+              </tr>
+              <tr>
+                <td>
+                  不规则的性能异常值
+                </td>
+                <td>时钟不一致或温度降频</td>
+                <td>确保所有时钟同步，并监控温度和功耗降频。</td>
+              </tr>
+            </tbody>
+       
+          </table>
+          <div data-type="note" epub:type="note">
+        <p>注意：所有指标表中的数值仅用于说明概念。不同 GPU 架构上的实际基准测试结果，请参阅 <a href="https://github.com/cfregly/ai-performance-engineering">GitHub 仓库</a>。
+        </p>
+</div>
+          <p>部分信息也可能隐藏在日志文件中。AWS 等云服务商支持对日志文件使用正则表达式（RegEx）过滤器，从日志行中提取数值并直接导出为指标。例如，AWS CloudWatch 就支持这一实用功能。下一个代码块包含一些值得监控的日志示例。</p>
+          <p>下面是一段 vLLM 日志示例<a contenteditable="false" data-primary="vLLM" data-secondary="troubleshooting inference" data-type="indexterm" id="id3865"/>，它表示由于 KV 缓存空间不足而发生了 KV 缓存抢占。因此触发了 KV 重计算，这会占用更多 GPU 计算资源并增加延迟：</p>
+
+          <pre data-code-language="shell" data-type="programlisting">WARNING<code class="w"> </code><code class="m">2025</code>-05-03<code class="w"> </code><code class="m">14</code>:22:07<code class="w"> </code>scheduler.py:1057<code class="w"> </code>Sequence<code class="w"> </code>group<code class="w"> </code><code class="m">0</code><code class="w"> </code>is<code class="w"> </code>preempted<code class="w"> </code>by<code class="w"> </code>
+PreemptionMode.RECOMPUTE<code class="w"> </code>because<code class="w"> </code>not<code class="w"> </code>enough<code class="w"> </code>KV<code class="w"> </code>cache<code class="w"> </code>space.<code class="w"> </code>
+<code class="nv">total_cumulative_preemption_cnt</code><code class="o">=</code><code class="m">1</code><code class="w"/></pre>
+          <p>下面是 NVIDIA Dynamo 路由日志示例。第一行表示本地解码工作进程的前缀缓存命中率为 90%，因此预填充继续在本地运行；下一行表示本地缓存未命中。随后，路由器把预填充调度到远程的 <code>GPU-node-03</code> 工作节点：</p>
+
+          <pre data-code-language="shell" data-type="programlisting"><code class="o">[</code>Router<code class="o">]</code><code class="w"> </code><code class="m">2025</code>-05-03T14:23:11Z<code class="w"> </code>INFO<code class="w"> </code>KVRouter:<code class="w"> </code>prefix-cache<code class="w"> </code>hit<code class="w"> </code><code class="o">(</code><code class="m">90</code>%<code class="o">)</code><code class="w"> </code><code class="k">for</code><code class="w"> </code>
+<code class="nv">model</code><code class="o">=</code>DeepSeek-R1<code class="p">;</code><code class="w"> </code>routing<code class="w"> </code>to<code class="w"> </code><code class="nb">local</code><code class="w"> </code>vLLM<code class="w"> </code>worker<code class="w"/>
+<code class="o">[</code>Router<code class="o">]</code><code class="w"> </code><code class="m">2025</code>-05-03T14:23:12Z<code class="w"> </code>INFO<code class="w"> </code>KVRouter:<code class="w"> </code>cache<code class="w"> </code>miss<code class="p">;</code><code class="w"> </code>dispatching<code class="w"> </code>remote<code class="w"> </code>
+prefill<code class="w"> </code>to<code class="w"> </code>GPU-node-03<code class="w"/></pre>
+        </div></section>
+        <section data-pdf-bookmark="Full-Stack Inference Optimizations" data-type="sect2"><div class="sect2" id="ch16_full_stack_inference_optimizations_1757308074606656">
+          <h2>全栈推理优化</h2>
+          <p>高性能 LLM 推理要求对技术栈的每一层进行协同优化<a contenteditable="false" data-primary="inference" data-secondary="tuning performance" data-tertiary="full-stack optimizations" data-type="indexterm" id="ch16full"/><a contenteditable="false" data-primary="performance metrics" data-secondary="inference tuning" data-tertiary="full-stack optimizations" data-type="indexterm" id="ch16full2"/>，范围从模型架构和内核实现，一直到运行时引擎、系统编排和部署基础设施。 </p>
+          <p>剪枝、蒸馏、稀疏性、MoE 路由、高效注意力（例如 FlashAttention）和量化感知训练等模型级技术，可以降低计算和内存需求。在内核层面，融合操作、自定义注意力引擎（例如 FlashInfer）、Tensor Core 利用、分块以及异步内存传输，有助于最大化 GPU 吞吐量。</p>
+          <p>动态批处理、分页 KV 缓存、CUDA Graph 以及计算与通信重叠等运行时策略，可以让 GPU 在负载变化时仍保持较高利用率。系统编排层可以采用预填充/解码解耦、智能路由、多租户隔离和自动扩缩容（配合热备用实例），以平衡延迟并提高成本效率。 </p>
+          <div data-type="tip">
+            <p>许多生产系统使用基于 <a contenteditable="false" data-primary="Kubernetes (K8s)" data-secondary="deploying a disaggregated inference system" data-type="indexterm" id="id3866"/><a contenteditable="false" data-primary="deployment" data-secondary="inference optimizations" data-type="indexterm" id="id3867"/><a contenteditable="false" data-primary="decode" data-secondary="disaggregated from prefill" data-tertiary="deploying with Kubernetes" data-type="indexterm" id="id3868"/><a contenteditable="false" data-primary="disaggregated prefill and decode" data-secondary="deploying with Kubernetes" data-type="indexterm" id="id3869"/><a contenteditable="false" data-primary="inference" data-secondary="multinode inference" data-tertiary="Kubernetes for deploying" data-type="indexterm" id="id3870"/><a contenteditable="false" data-primary="multinode inference" data-secondary="Kubernetes for deploying" data-type="indexterm" id="id3871"/><a contenteditable="false" data-primary="prefill" data-secondary="disaggregated from decode" data-type="indexterm" id="id3872"/>Kubernetes 的系统编排，分别运行预填充和解码部署。它们使用入口控制器，根据负载或用户优先级路由请求，并准备好热备用 GPU Pod，以便在流量激增时立即启动。 </p>
+          </div>
+          <p>最后，还应探索地理分布式边缘服务、智能 API 网关批处理、模型变体的 CI/CD 以及实时性能分析等部署模式。这些方法能够提高生产环境的可靠性和适应性。<a data-type="xref" href="#ch16_table_2_1757308074586167">表 16-2</a>介绍了技术栈各层的一些常见优化<a contenteditable="false" data-primary="runtime optimization" data-type="indexterm" id="id3873"/>方法。</p>
+          <table id="ch16_table_2_1757308074586167">
+            <caption><span class="label">表 16-2　</span>技术栈各层的常见优化方法</caption>
+            <thead>
+              <tr>
+                <th>技术栈层</th>
+                <th>关键技术</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  模型
+                </td>
+                <td>通过剪枝和知识蒸馏在尽量减少准确率损失的同时缩小模型规模<br/>使用稀疏性（MoE）跳过计算<br/>使用高效注意力（FlashAttention）减少内存占用和中间缓冲区<br/>在 FP16/BF16 或 INT4/FP8 中进行量化感知训练，以增强低精度下的鲁棒性</td>
+              </tr>
+              <tr>
+                <td>
+                  内核
+                </td>
+                <td>融合算子内核（例如 Linear + GELU + LayerNorm），减少启动开销和内存流量<br/>用于块稀疏 KV 的自定义注意力内核（FlashInfer）和 JIT 编译内核<br/>在矩阵运算中利用 Tensor Core 和专用指令（cp.async、TMA）</td>
+              </tr>
+              <tr>
+                <td>
+                  运行时
+                </td>
+                <td>采用 vLLM、SGLang 和 NVIDIA Dynamo 中实现的带延迟控制的动态批处理（例如连续批处理）来合并请求<br/>使用分页 KV 缓存管理灵活分配内存并合并批次（vLLM 的 PagedAttention）<br/>使用 CUDA Graph 和缓冲区池减少每次推理的开销<br/>使用多个 CUDA 流（一个用于数据传输，另一个用于计算）来重叠计算与通信。采用基于事件的同步，并且只在需要时同步。</td>
+              </tr>
+              <tr>
+                <td>
+                  系统编排
+                </td>
+                <td>预填充—解码解耦，以消除队头阻塞<br/>智能路由和缓存亲和性，以平衡负载并提高缓存命中率<br/>多租户隔离和逐用户配额，以防止嘈杂邻居影响<br/>使用热备用实例自动扩缩容，隐藏模型加载时间；在流量激增时以略微增加成本换取显著更低的延迟</td>
+              </tr>
+              <tr>
+                <td>
+                  部署和基础设施
+                </td>
+                <td>地理分布式和边缘部署，以减少网络 RTT<br/>跨服务器池进行请求级批处理的智能 API 网关<br/>用于以金丝雀模式推出新的量化或内核优化模型变体的 CI/CD 流水线<br/>高带宽互连（NVLink/NVSwitch 和 InfiniBand），以及 GPU 与 CPU 之间的 NUMA 亲和性，以实现最佳内存访问</td>
+              </tr>
+              <tr>
+                <td>
+                  QoS 和扩缩容
+                </td>
+                <td>感知 SLA 的动态批处理和尾延迟控制<br/>使用 MIG 或流优先级隔离 GPU，以实施 QoS<br/>用于 TTFT、TPOT、利用率和内存带宽利用率的实时性能分析仪表板<br/>根据工作负载特征动态切换并行策略（TP、PP、DP）</td>
+              </tr>
+            </tbody>
+    
+          </table>
+          <p>进行优化时，必须考虑跨层协同效应。例如，量化（模型层）会减少内存占用，使运行时能够在不发生 OOM 的情况下使用更大的批大小，进而让编排组件在每个 GPU 周期合并更多请求。</p>
+          <p>还应以性能分析结果为依据。持续性能分析应指导下一步优化哪一层。例如，完成融合和量化后，如果 CPU 成为预处理和后处理的瓶颈，就应采用更快的分词器，或把部分任务卸载到 GPU。</p>
+          <p>应用优化总要权衡取舍。分层 CPU 卸载和高级解码方法等技术会增加复杂性。例如，推测解码需要增加草稿模型，Medusa 则增加多头并行解码。这些技术通常保留给超长上下文或延迟波动异常等极端场景；在生产环境中，稀疏性、批处理和解耦等较轻量的方法往往贡献大部分收益。</p>
+          <p>建议采用全栈优化方法，使模型架构、内核设计、运行时行为、系统编排和部署策略彼此协调。这意味着要及时更新软件栈，包括 CUDA、cuDNN、NCCL 等，因为新版本通常包含最新优化和错误修复。 </p>
+          
+          
+<div data-type="tip">
+      <p>为了在固定主机镜像上复现基准测试，应为原生扩展栈维护经过测试的兼容性矩阵，不要混用任意版本。这一点对于 PyTorch、服务引擎和自定义/原生扩展的组合尤其重要。在进行长时间的批量测试前，先运行一个小型导入冒烟测试。</p>
+</div>
+          <p>全栈方法可以降低各层成为瓶颈的可能性。这样，团队就能系统地消除瓶颈，在大规模 LLM 推理中实现稳定的低延迟，并最大化硬件利用率。<a contenteditable="false" data-primary="" data-startref="ch16full" data-type="indexterm" id="id3874"/><a contenteditable="false" data-primary="" data-startref="ch16full2" data-type="indexterm" id="id3875"/></p>
+        </div></section>
+        <section data-pdf-bookmark="Debugging Correctness Issues" data-type="sect2"><div class="sect2" id="ch16_debugging_correctness_issues_1757308074606711">
+          <h2>调试正确性问题</h2>
+          <p>监控也有助于发现由 bug 引起的异常<a contenteditable="false" data-primary="inference" data-secondary="tuning performance" data-tertiary="correctness issue debugging" data-type="indexterm" id="ch16corr"/><a contenteditable="false" data-primary="correctness issues in inference" data-type="indexterm" id="ch16corr2"/><a contenteditable="false" data-primary="debugging" data-secondary="inference correctness issues" data-type="indexterm" id="ch16corr3"/><a contenteditable="false" data-primary="monitoring" data-secondary="inference system metrics and counters" data-tertiary="correctness issue debugging" data-type="indexterm" id="ch16corr4"/><a contenteditable="false" data-primary="Compute Sanitizer (NVIDIA)" data-secondary="inference correctness" data-type="indexterm" id="id3876"/><a contenteditable="false" data-primary="NVIDIA Compute Sanitizer" data-secondary="inference correctness" data-type="indexterm" id="id3877"/>。例如，如果内存用量持续增长，可能是 CUDA 内核发生了内存泄漏。建议在测试期间使用 Compute Sanitizer（<code>compute-sanitizer</code>），捕获设备内存错误、竞态条件和越界访问。示例如下： </p>
+
+          <pre data-code-language="shell" data-type="programlisting">compute-sanitizer<code class="w"> </code>--tool<code class="w"> </code>memcheck<code class="w"> </code>your_binary<code class="w"/></pre>
+          <p>如果某块 GPU 的利用率明显低于其他 GPU，<a contenteditable="false" data-primary="NCCL (NVIDIA Collective Communications Library)" data-secondary="debugging" data-tertiary="inference correctness issue" data-type="indexterm" id="id3878"/><a contenteditable="false" data-primary="NCCL (NVIDIA Collective Communications Library)" data-secondary="debugging" data-tertiary="NCCL logs" data-type="indexterm" id="id3879"/><a contenteditable="false" data-primary="logging" data-secondary="NCCL logs" data-type="indexterm" id="id3880"/><a contenteditable="false" data-primary="debugging" data-secondary="NCCL" data-tertiary="NCCL logs" data-type="indexterm" id="id3881"/><a contenteditable="false" data-primary="NCCL_DEBUG" data-secondary="NCCL logs" data-type="indexterm" id="id3882"/><a contenteditable="false" data-primary="NCCL_DEBUG" data-type="indexterm" id="id3883"/><a contenteditable="false" data-primary="environment variables" data-secondary="NCCL_DEBUG" data-type="indexterm" id="id3884"/>它可能因 NCCL 静默失败或未捕获错误而退出 NCCL 通信组。可以在日志中搜索 <code>WARN NCCL_COMM_FAILURE</code> 来检查 NCCL 错误代码；NCCL 会提供非常详细的错误日志。</p>
+          <div data-type="tip">
+            <p>将环境变量设置为 <code>NCCL_DEBUG=WARN</code>，即可启用 NCCL 调试<a contenteditable="false" data-primary="NCCL (NVIDIA Collective Communications Library)" data-secondary="debugging" data-tertiary="NCCL debugging enabled" data-type="indexterm" id="id3885"/><a contenteditable="false" data-primary="debugging" data-secondary="NCCL" data-tertiary="debugging enabled" data-type="indexterm" id="id3886"/><a contenteditable="false" data-primary="debugging" data-secondary="NCCL" data-tertiary="NCCL_DEBUG" data-type="indexterm" id="id3887"/>。这有助于暴露原本可能静默发生的错误。不过要注意，NCCL 日志非常<span class="keep-together">详细！</span></p>
+          </div>
+          <p>使用 NCCL 测试套件调试<a contenteditable="false" data-primary="NCCL (NVIDIA Collective Communications Library)" data-secondary="debugging" data-tertiary="test suite" data-type="indexterm" id="id3888"/><a contenteditable="false" data-primary="debugging" data-secondary="NCCL" data-tertiary="test suite" data-type="indexterm" id="id3889"/> all-reduce 和 all-to-all 的性能与正确性问题。还可以将 <code>ncclCommGetAsyncError</code> 与 <code>ncclCommAbort</code> 配合使用，以检测和处理异步通信错误。此外，可以启用 NCCL 的 <code>IB GID</code> 追踪，并利用 NVSwitch 系统遥测从互连层面发现问题。</p>
+          <p>应在 Prometheus Alertmanager 中设置告警<a contenteditable="false" data-primary="Prometheus" data-secondary="inference monitoring" data-tertiary="alert manager" data-type="indexterm" id="id3890"/>，以检测诸如“GPU 利用率至少 60 秒低于 10%”“内存用量超过 W% 阈值”“NVLink 错误率高于 X”“PCIe 重放次数超过 Y 阈值”“温度高于 Z 度”等异常模式。 </p>
+          <p>实践中，可以配置如<a data-type="xref" href="#ch16_table_3_1757308074586187">表 16-3</a>所示的 Prometheus Alertmanager 规则，以便主动调查问题。 </p>
+          <table id="ch16_table_3_1757308074586187">
+            <caption><span class="label">表 16-3　</span>基于 GPU 的系统中常见 Prometheus 告警示例</caption>
+            <thead>
+              <tr>
+                <th>指标</th>
+                <th>条件</th>
+                <th>严重性</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>GPU 利用率</td>
+                <td>&lt; 10% for &gt; 60 s</td>
+                <td>空闲</td>
+                <td>利用率不足</td>
+              </tr>
+              <tr>
+                <td>GPU 利用率</td>
+                <td>&gt; 90%</td>
+                <td>瓶颈</td>
+                <td>可能已饱和</td>
+              </tr>
+              <tr>
+                <td>内存用量</td>
+                <td>&gt; 80%</td>
+                <td>警告</td>
+                <td>接近 OOM</td>
+              </tr>
+              <tr>
+                <td>内存用量</td>
+                <td>&gt; 95%</td>
+                <td>严重</td>
+                <td>内存不足错误风险高</td>
+              </tr>
+              <tr>
+                <td>温度</td>
+                <td>&gt; 85 °C</td>
+                <td>警告</td>
+                <td>接近温度降频</td>
+              </tr>
+              <tr>
+                <td>温度</td>
+                <td>&gt; 95 °C</td>
+                <td>严重</td>
+                <td>存在关机或硬件损坏风险</td>
+              </tr>
+              <tr>
+                <td>NVLink 重放/恢复错误</td>
+                <td>≥ 1</td>
+                <td>严重</td>
+                <td>表示链路正在重试或恢复</td>
+              </tr>
+              <tr>
+                <td>NVLink CRC 错误</td>
+                <td>&gt; 每秒 100 个错误</td>
+                <td>严重</td>
+                <td>链路 CRC 失败率高</td>
+              </tr>
+              <tr>
+                <td>PCIe 重放错误</td>
+                <td>≥ 1</td>
+                <td>严重</td>
+                <td>PCIe 总线上的数据包重试</td>
+              </tr>
+              <tr>
+                <td>不可纠正的 ECC 错误</td>
+                <td>≥ 1</td>
+                <td>严重</td>
+                <td>数据损坏，需要重置</td>
+              </tr>
+            </tbody>
+        
+          </table>
+          <p>还应设置硬件错误计数器和告警。例如，一旦报告 ECC 错误或 NVLink 重试，就应立即告警，因为这些问题可能迅速降低性能或导致掉线。掉线是指 GPU 或其互连静默断开；例如，NVLink 可能断开，或者 GPU 在发生致命错误后“从总线掉出”。</p>
+          <div data-type="tip">
+            <p>可以使用 DCGM 获取逐链路 NVLink 吞吐量和总量，包括 <code>DCGM_FI_DEV_NVLINK_TX_BANDWIDTH_L*</code>、<code>DCGM_FI_DEV_NVLINK_RX_BANDWIDTH_L*</code> 和 <code>*_TOTAL</code>。如有需要，再使用 <code>nvidia-smi nvlink</code>、Nsight Systems/Compute 或 NVSwitch 计数器作为补充。</p>
+          </div>
+          <p>考虑一种 NCCL 故障：你可能收到告警，显示某个节点的 GPU 利用率接近 0%，而其他节点达到 90%。可以先检查节点日志，找出哪个节点正在产生 NCCL 错误。</p>
+          <p>这种主动监控和告警能更快捕获问题、找到故障节点并开始恢复。在这种情况下，可以重新初始化 NCCL 通信器，或完整重启节点（务必确认节点重启后重新加入 NCCL 组）。</p>
+          <p>还可以为 NCCL 错误递增“NCCL Error”计数器，从而更快捕获问题。此外，推理服务器可以记录 NCCL 错误，Fluentd 或 AWS CloudWatch 会自动抓取这些日志并将其转换为计数器。 </p>
+          <p>随后，可以在 Grafana 中把错误计数器图表叠加到逐节点 GPU 利用率图表上。这样就能将 NCCL 错误与 GPU 利用率下降关联起来，更快识别并修复故障节点。 </p>
+          <div data-type="tip">
+            <p>应用层计数器在生产环境中非常有用，尤其是与系统指标结合使用时。 </p>
+          </div>
+          <p>在通过实际指标验证吞吐量提高、延迟降低、利用率改善等结果之前，不能认为优化已经成功。现代 AI 推理系统十分复杂，因此必须采用严格、以测量为驱动的方法调优系统性能。 </p>
+          <p>简而言之，应结合应用层计数器、由 Fluentd 或 AWS CloudWatch 自动抓取的日志计数器，以及底层系统指标。这种全栈遥测为在生产工作负载上运行和优化高性能多节点 LLM 推理系统提供必要的可见性。应把指标、计数器和日志视为系统行为的事实依据。</p>
+          <div data-type="tip">
+            <p>直觉和主观感觉经常会把我们引向错误的调试路径，但指标不会说谎。应在一开始就正确地为代码插桩；出现问题时，相信指标。<a contenteditable="false" data-primary="" data-startref="ch16corr" data-type="indexterm" id="id3891"/><a contenteditable="false" data-primary="" data-startref="ch16corr2" data-type="indexterm" id="id3892"/><a contenteditable="false" data-primary="" data-startref="ch16corr3" data-type="indexterm" id="id3893"/><a contenteditable="false" data-primary="" data-startref="ch16corr4" data-type="indexterm" id="id3894"/></p>
+          </div>
+        </div></section>
+      </div></section>
+      <section class="pagebreak-before" data-pdf-bookmark="Dynamic Batching, Scheduling, and Routing" data-type="sect1"><div class="sect1" id="ch16_dynamic_batching_scheduling_and_routing_1757308074606784">
+        <h1 class="less_space">动态批处理、调度与路由</h1>
+        <p>即使已经在集群中对模型进行了最佳划分和并行化，多节点推理集群部署仍有许多应用层优化机会。本节聚焦于动态组成请求批次，并使用优化的调度和路由策略，以最大化 GPU 利用率、最小化延迟并提高吞吐量。</p>
+        <section data-pdf-bookmark="Dynamic Batching" data-type="sect2"><div class="sect2" id="ch16_dynamic_batching_1757308074606844">
+          <h2>动态批处理</h2>
+          <p>推理服务系统中最强大的性能技术之一<a contenteditable="false" data-primary="inference" data-secondary="batching" data-tertiary="dynamic batching" data-type="indexterm" id="ch16dyba"/><a contenteditable="false" data-primary="dynamic batching" data-type="indexterm" id="ch16dyba2"/><a contenteditable="false" data-primary="performance boosts" data-secondary="dynamic batching" data-type="indexterm" id="ch16dyba3"/><a contenteditable="false" data-primary="batching" data-secondary="dynamic batching" data-type="indexterm" id="ch16dyba4"/>是批处理。将多个输入合并为一个批次，让模型一起处理，可以把内核启动、内存加载等固定成本分摊到多个输入上，从而提高吞吐量。但代价是单个请求的延迟增加：某些请求可能需要等待一段时间（例如 2 ms）才能加入批次并得到处理。</p>
+          <p>动态批处理是请求批处理的一种特化形式，会即时将到达的推理请求组成大小动态变化的批次。可以配置为在一段时间内缓冲请求，或缓冲到达到指定批大小为止。所有现代 LLM 推理引擎都支持动态批处理，包括 vLLM、SGLang 和 NVIDIA Dynamo。</p>
+          <p>动态批处理与<em>静态批处理</em>相反<a contenteditable="false" data-primary="static batching" data-type="indexterm" id="id3895"/><a contenteditable="false" data-primary="dynamic batching" data-secondary="static batching versus" data-type="indexterm" id="id3896"/><a contenteditable="false" data-primary="batching" data-secondary="static batching" data-type="indexterm" id="id3897"/><a contenteditable="false" data-primary="inference" data-secondary="batching" data-tertiary="static batching" data-type="indexterm" id="id3898"/>：静态批处理固定批大小（或将所有序列填充到最长序列的长度），并等待该批次中的每个请求完成后才返回结果。这会让先到达的请求遭遇无界排队延迟，还会因填充而浪费 GPU 周期。 </p>
+          <p>使用动态批处理时，系统会累积到达的请求，在达到目标批大小或短暂超时（例如 2 ms）后，立即调度“已经到达的所有请求”。这样可以把最大延迟限制在指定的超时值以内。 </p>
+          <p>动态批处理能够即时调整批大小，把内核启动开销分摊到多个序列，同时避免静态批处理的最坏情况延迟。这既提高 GPU 利用率，也让可变负载下的延迟更可预测。<a data-type="xref" href="#ch16_figure_5_1757308074576514">图 16-5</a>展示了静态批处理和动态批处理的差异。</p>
+          
+          <p>动态批处理可以根据实际请求到达模式和延迟目标（例如最大延迟）自动增大或缩小批大小。关键是智能组批，在提高总体吞吐量的同时把延迟维持在可接受范围内。现代推理引擎会实现微批处理，只累积几毫秒请求就将批次调度到 GPU。通常使用 2～10 ms 的延迟，但仍应根据延迟 SLO 调整。</p>
+          
+          <figure><div class="figure" id="ch16_figure_5_1757308074576514">
+            <img alt="随时间比较静态与动态批处理的示意图：静态批处理显示固定大小分组，动态批处理为提高效率调整分组大小。" src="assets/aisp_1605.png"/>
+            <h6><span class="label">图 16-5　</span>静态批处理和动态批处理的差异</h6>
+          </div></figure>
+          <p>例如，可以将批延迟配置为 2 ms，用来决定服务器在调度批次前等待额外请求的时间。如果这段时间内到达三个请求，批处理器会立即将它们组成一批并发送到 GPU。2 ms 计时器到期后到达的请求，则会被收集到下一批。这个由超时触发的机制将每个请求的排队延迟限制在不超过 2 ms，同时通过合并多个序列提高吞吐量。</p>
+          <p>这些微批次减少了额外延迟，并让 GPU 一次处理多个请求，而不是一次处理一个。大型 LLM 在批大小较小时通常受内存带宽限制，因此增大批大小可以提高算术强度和总体硬件利用率。</p>
+          <p>实践中，LLM 服务系统会选择平衡的批大小，在不引入过多延迟的情况下获得良好吞吐量。在高负载下，动态批处理可以避免 GPU 在请求之间空闲，因而可能同时改善吞吐量和排队延迟。当请求到达率较高且系统尚未超过饱和点时，批处理能够在相同时间内处理更多工作，减少总体排队等待，有利于端到端延迟和尾延迟；超过膝点后，延迟反而会快速上升。</p>
+          <p>在低 RPS（每秒请求数）下，动态批处理会等待其他请求加入批次，因此会增加少量延迟<a contenteditable="false" data-primary="performance metrics" data-secondary="RPS (requests per second)" data-type="indexterm" id="id3899"/><a contenteditable="false" data-primary="RPS (requests per second)" data-type="indexterm" id="id3900"/><a contenteditable="false" data-primary="requests per second (RPS)" data-type="indexterm" id="id3901"/>。在中高 RPS 且容量充足时，这段等待可由更高处理效率分摊；相对于逐个运行请求造成的排队延迟，它可能较小。因此，适当批处理可以降低总体延迟，包括尾延迟，但效果必须在实际负载曲线上验证。</p>
+          <div data-type="tip">
+            <p>应使用 Grafana 等工具绘制延迟百分位数随负载变化的曲线，验证改进效果。采用批处理后，随着吞吐量提高，总体 p50 延迟可能保持平稳甚至下降，但通常只持续到某个拐点。应记录这个拐点，并把运行状态保持在其下方。 </p>
+          </div>
+          <p>配置批处理时必须考虑延迟 SLO。例如，如果承诺某种长度请求的 p99 延迟为 2 秒，就不能让请求在批队列中等待 500 ms。<a contenteditable="false" data-primary="dynamic batching" data-secondary="adaptive batching delay" data-type="indexterm" id="id3902"/>动态批延迟的初始值应远低于 p99 延迟预算；1～2 ms 只是可供基准测试的起点，需按服务目标和到达模式调节。 </p>
+          <p>采用自适应批延迟后，在低 RPS 下，批延迟可以动态降至接近 0 ms；在峰值负载下有需要时，可以提高到例如 5～10 ms。具体引擎的调度语义和参数并不相同，应根据流量模式闭环调整，以满足 SLO。</p>
+          <p>批处理主要适用于高流量场景。流量低时，系统会直接运行单个请求，延迟很低；但在高负载下，<span class="keep-together">系统</span>可以采用积极的批处理来获得高吞吐量，并通过避免队列堆积、在多个请求之间分摊延迟，改善总体延迟。<a contenteditable="false" data-primary="" data-startref="ch16dyba" data-type="indexterm" id="id3903"/><a contenteditable="false" data-primary="" data-startref="ch16dyba2" data-type="indexterm" id="id3904"/><a contenteditable="false" data-primary="" data-startref="ch16dyba3" data-type="indexterm" id="id3905"/><a contenteditable="false" data-primary="" data-startref="ch16dyba4" data-type="indexterm" id="id3906"/></p>
+        </div></section>
+        <section data-pdf-bookmark="Continuous Batching" data-type="sect2"><div class="sect2" id="ch16_continuous_batching_1757308074606894">
+          <h2>连续批处理</h2>
+          <p>连续批处理也称为<a contenteditable="false" data-primary="continuous batching" data-type="indexterm" id="id3907"/><a contenteditable="false" data-primary="in-flight batching" data-type="indexterm" id="id3908"/><a contenteditable="false" data-primary="iteration-level scheduling" data-type="indexterm" id="id3909"/><a contenteditable="false" data-primary="batching" data-secondary="continuous batching" data-type="indexterm" id="id3910"/><a contenteditable="false" data-primary="inference" data-secondary="batching" data-tertiary="continuous batching" data-type="indexterm" id="id3911"/><a contenteditable="false" data-primary="scheduling" data-secondary="iteration-level scheduling" data-type="indexterm" id="id3912"/><em>在途批处理</em>或<em>迭代级调度</em>，它不等待完整序列结束，而是在每次 token 生成迭代时重新填充批次，以保持较高 GPU 利用率。它会驱逐已完成的请求，并根据 GPU 是否就绪立即加入新请求。这项技术对于聊天助手等低延迟场景尤其重要。</p>
+          <p>与动态批处理等由超时驱动的方法不同，事件驱动的连续批处理策略消除了空闲计算槽位以及这些方法带来的填充开销。连续批处理不依赖固定的“最大延迟”计时器，因此允许新请求在生成中途加入正在运行的批次，也不会被最长序列阻塞，如<a data-type="xref" href="#ch16_figure_6_1757308074576531">图 16-6</a>所示。</p>
+          <figure><div class="figure" id="ch16_figure_6_1757308074576531">
+            <img alt="展示连续批处理的示意图，显示序列在生成中途加入批次并高效填充计算槽位，以减少空闲时间和提高吞吐量。" src="assets/aisp_1606.png"/>
+            <h6><span class="label">图 16-6　</span>连续批处理允许新序列（请求）在<span class="keep-together">生成中途</span>加入批次</h6>
+          </div></figure>
+          <p>这里，连续批处理最大限度减少了推理计算流水线中的空闲槽位。它消除了每个批次等待最长响应完成所造成的空闲时间。连续批处理不等待批次中的所有序列结束（由于输出长度不同，这样做效率低且会导致 GPU 利用率不足），而是在每次迭代用新序列替换已完成的序列。这种方法允许新请求立即填充 GPU 槽位，从而提高吞吐量、降低延迟并提升 GPU 利用率。 </p>
+          <p>在大型模型上，将 4～8 个请求组成批次，吞吐量常常可以达到 1～2 个请求批次的两到三倍，但实际增益取决于模型、硬件、序列长度和调度实现。这是因为 GPU 的数学单元和内存流水线得到了更充分利用。每个请求增加的延迟通常只有几毫秒，因此这种策略适合低延迟场景。<a data-type="xref" href="#ch16_table_4_1757308074586203">表 16-4</a><span class="keep-together">总结了</span><a contenteditable="false" data-primary="batching" data-secondary="comparing static, dynamic, continuous" data-type="indexterm" id="id3913"/><a contenteditable="false" data-primary="inference" data-secondary="batching" data-tertiary="comparing static, dynamic, continuous" data-type="indexterm" id="id3914"/>前面讨论的不同批处理策略，包括朴素的静态批处理策略。</p>
+          <table id="ch16_table_4_1757308074586203">
+            <caption><span class="label">表 16-4　</span>静态、动态和连续批处理对比 </caption>
+            <thead>
+              <tr>
+                <th>方面</th>
+                <th>静态批处理</th>
+                <th>动态批处理</th>
+                <th>连续批处理</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                   触发条件
+                </td>
+                 <td>固定批大小或序列长度</td>
+                 <td>批大小目标或超时</td>
+                 <td>token 生成完成事件</td>
+              </tr>
+              <tr>
+                <td>
+                   延迟上限
+                </td>
+                 <td>无界；等待完整批次</td>
+                 <td>受 <code>max_batch_delay_ms</code> 限制</td>
+                 <td>极小；在批次中途驱逐并重新填充</td>
+              </tr>
+              <tr>
+                <td>
+                   填充开销
+                </td>
+                 <td>高：填充到最长序列</td>
+                 <td>中等：在每个批次内填充</td>
+                 <td>低：无需等待填充即可重新填充槽位</td>
+              </tr>
+              <tr>
+                <td>
+                   GPU 空闲缓解
+                </td>
+                 <td>差：尤其是在大小可变的负载下</td>
+                 <td>较好：但计时器在小批次上触发时可能让 GPU 空闲</td>
+                 <td>优秀：每次迭代都让 GPU 保持饱和</td>
+              </tr>
+              <tr>
+                <td>
+                   实现
+                </td>
+                 <td>简单</td>
+                 <td>中等：需要计时器和队列管理</td>
+                 <td>复杂：需要逐 token 协调和状态跟踪</td>
+              </tr>
+            </tbody>
+           
+          </table>
+        </div></section>
+        <section data-pdf-bookmark="Continuous Scheduling" data-type="sect2"><div class="sect2" id="ch16_continuous_scheduling_1757308074606941">
+          <h2>连续调度</h2>
+          <p>请求调度的另一个维度<a contenteditable="false" data-primary="continuous scheduling" data-type="indexterm" id="id3915"/><a contenteditable="false" data-primary="inference" data-secondary="continuous scheduling" data-type="indexterm" id="id3916"/><a contenteditable="false" data-primary="scheduling" data-secondary="continuous scheduling" data-type="indexterm" id="id3917"/>是并发执行模型。vLLM 社区将其称为<em>连续调度</em>。其基本思想是：如果模型较小，或批大小受到延迟目标限制，单个模型实例可能无法让 GPU 完全饱和。 </p>
+          <p>连续调度对待 GPU 的方式类似于操作系统调度器对待 CPU：在不同 CUDA 流上启动相互独立的小内核。这样，硬件 warp 调度器便能在任务之间交错调度 warp，而无须显式上下文切换。</p>
+          <p>例如，如果推理引擎未能让 GPU 完全饱和，就可以在同一 GPU 上并发运行多个模型推理流。这样，当一个实例等待数据传输或非 GPU 操作时，另一个实例便可执行。 </p>
+          <p>具体来说，在解码阶段一次生成一个 token，往往会使 GPU 利用率不足，尤其是只处理单个文本序列时。这是因为工作负载相对较小，并且相对于计算量而言需要移动大量内存数据。</p>
+          <p>为解决这一低效问题，推理引擎可以交错执行来自不同用户请求的多个解码任务。例如，如果 10 个用户同时解码不同序列，不能总是直接把它们组成一次大型矩阵乘法，因为各序列长度可能不同；若不进行大量填充，GPU 就难以高效执行这种统一矩阵运算。</p>
+          <p>连续调度器可以改为在不同 CUDA 流上快速连续启动 10 个小型解码内核，分别为每个序列生成下一个 token。借助 GPU 的细粒度 warp 调度器，不同序列可以真正并发，内核的 warp 会在各个 SM 上交错执行。这种近似轮询的处理模式有助于减少空闲周期。</p>
+          <p>把每个解码任务排入各自的流后，GPU 可以在不同序列之间重叠内存传输和计算，从而缩短逐 token 延迟并提高总体吞吐量。</p>
+          <p>GPU 在 warp 级别交错调度这些内核。当某个解码内核因 CPU 端控制流低效或等待网络 I/O 而无法继续提交工作时，其他已就绪内核仍可推进。这有助于提高 GPU 利用率，但实际并发程度仍受资源占用、依赖关系和硬件调度限制。 </p>
+          <p>连续调度维护一个已就绪 token 任务队列，即使在 token 级粒度上也能获得较高利用率。最终效果类似于批处理：GPU 持续执行 token 生成，但不必把所有工作合并成一次巨型矩阵乘法；关键是避免 GPU 在相邻 token 计算之间空闲。这种 token 级细粒度调度有助于提升大规模用户服务的吞吐量。</p>
+          <p>在固定时间间隔，或每当 GPU 空闲时，连续调度器会把所有待处理的下一 token 请求组成大小可配置的批次，再以一次 GPU 调用调度该批次。这有助于平衡吞吐量与延迟。 </p>
+          <div data-type="tip">
+            <p>设计自定义调度器时，可以考虑混合方法：为 token 调度同时设置短计时器和最大批大小。 </p>
+          </div>
+          <p>vLLM<a contenteditable="false" data-primary="vLLM" data-secondary="dynamic batching merged with continuous scheduling" data-type="indexterm" id="id3918"/><a contenteditable="false" data-primary="SGLang" data-secondary="dynamic batching merged with continuous scheduling" data-type="indexterm" id="id3919"/><a contenteditable="false" data-primary="scheduling" data-secondary="continuous scheduling" data-tertiary="dynamic batching merged with" data-type="indexterm" id="id3920"/> 和 SGLang 等先进系统将动态批处理与连续调度结合起来。其自定义连续调度器的核心思想，是尽量消除 GPU 时间线中的“气泡”。 </p>
+          <p>vLLM 的 PagedAttention 是这种混合方法的一个具体示例<a contenteditable="false" data-primary="vLLM" data-secondary="dynamic batching merged with continuous scheduling" data-tertiary="PagedAttention" data-type="indexterm" id="id3921"/><a contenteditable="false" data-primary="PagedAttention (vLLM)" data-type="indexterm" id="id3922"/><a contenteditable="false" data-primary="KV cache" data-secondary="vLLM PagedAttention" data-type="indexterm" id="id3923"/><a contenteditable="false" data-primary="vLLM" data-secondary="PagedAttention" data-type="indexterm" id="id3924"/>。PagedAttention 将注意力键值（KV）缓存划分为片段或页，并在活跃序列之间动态组织与页面相关的计算。通过交错执行大型预填充 GEMM 和快速的小型解码内核，它可以在合适的高负载工作负载下获得很高的 GPU 利用率；原文所称“接近 100%”并非跨硬件与负载的普遍保证。 </p>
+          <p>vLLM 使用块级 KV 缓存结构分别跟踪每个请求的状态。这种细粒度记账方式通过实时、持续地装填和多路复用工作负载，支持快速流式响应并改善硬件利用率。</p>
+          <p>另一个示例是 SGLang 的 RadixAttention<a contenteditable="false" data-primary="SGLang" data-secondary="dynamic batching merged with continuous scheduling" data-tertiary="RadixAttention" data-type="indexterm" id="id3925"/><a contenteditable="false" data-primary="RadixAttention (SGLang)" data-type="indexterm" id="id3926"/><a contenteditable="false" data-primary="SGLang" data-secondary="RadixAttention" data-tertiary="dynamic batching merged with continuous scheduling" data-type="indexterm" id="id3927"/>，它使用基于树的 KV 缓存组织方式，并对未使用的缓存页采用惰性淘汰。在合适的高负载条件下，它同样可以获得很高的 GPU 利用率，但不能把“接近 100%”视为通用结果。稍后将更详细地介绍 vLLM 的 PagedAttention 和 SGLang 的 <span class="keep-together">RadixAttention</span>。两者均为开源实现，因此可以直接查看其调度代码。</p>
+        </div></section>
+        <section data-pdf-bookmark="Stall-Free Scheduling (Chunked Prefill)" data-type="sect2"><div class="sect2" id="ch16_stall_free_scheduling_chunked_prefill_1757308074606991">
+          <h2>无停顿调度（分块预填充）</h2>
+          <p>当提示词极长时，<a contenteditable="false" data-primary="stall-free scheduling" data-type="indexterm" id="id3928"/><a contenteditable="false" data-primary="chunked prefill" data-type="indexterm" id="id3929"/><a contenteditable="false" data-primary="prefill" data-secondary="chunked prefill" data-type="indexterm" id="id3930"/><a contenteditable="false" data-primary="prompts extremely long" data-secondary="stall-free scheduling" data-type="indexterm" id="id3931"/><a contenteditable="false" data-primary="scheduling" data-secondary="stall-free scheduling" data-type="indexterm" id="id3932"/><a contenteditable="false" data-primary="input" data-secondary="very long inputs" data-tertiary="stall-free scheduling" data-type="indexterm" id="id3933"/><a contenteditable="false" data-primary="inference" data-secondary="batching" data-tertiary="stall-free scheduling" data-type="indexterm" id="id3934"/>可以把它拆成多个区块，交错执行预填充和解码工作。这称为<em>无停顿调度</em>或<em>分块预填充</em>。 </p>
+          <p>考虑一个包含 20K token 的提示词。将其拆分为 5K token 的区块，可以降低每次迭代的最大停顿，并把每次迭代的工作量限制在固定 token 数，从而获得可预测的迭代延迟。不同区块大小下的分块预填充成本见<a data-type="xref" href="#ch16_table_5_1757308074586219">表 16-5</a>。</p>
+          <table id="ch16_table_5_1757308074586219">
+            <caption><span class="label">表 16-5　</span>20K token 提示词采用不同区块大小分块预填充时的成本</caption>
+            <thead>
+              <tr>
+                <th>区块大小</th>
+                <th>区块数量</th>
+                <th>每个区块的注意力操作数</th>
+                <th>MLP token 总数</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>20K</td>
+                <td>1</td>
+                <td>20K × (20K + 1) ÷ 2 = 200M</td>
+                <td>1 × 20K = 20K</td>
+              </tr>
+              <tr>
+                <td>10K</td>
+                <td>2</td>
+                <td>50M + 150M = 200M</td>
+                <td>2 × 10K = 20K</td>
+              </tr>
+              <tr>
+                <td>5K</td>
+                <td>4</td>
+                <td>12.5M + 37.5M + 62.5M + 87.5M = 200M</td>
+                <td>4 × 5K = 20K</td>
+              </tr>
+            </tbody>
+           
+          </table>
+          <p>由于 KV 缓存，每个区块的注意力成本会随完整上下文增长。每个新区块都要为自身 token 计算注意力，并与前面区块中的全部 token 进行比较。</p>
+          <p>在自注意力中，长度为 <em>N</em> 的序列所需 QK 点积数量呈三角形增长，约为 N(N + 1) ÷ 2。这表示每层每个头的 Q × K 点积操作数，成本关于 <em>N</em> 呈二次增长（O(N<sup>2</sup>)）。因此，当 N = 20,000 时，约有 2 亿次操作。分块不会减少总量，只会改变工作何时可供解码器使用。分块预填充的收益在于平滑延迟和改善重叠，而不是减少注意力点积操作总数。</p>
+          <div data-type="tip">
+            <p>预填充自注意力在每层每个头上执行 N(N + 1) ÷ 2 次 Q × K 点积，成本关于 <em>N</em> 呈二次增长，即 O(N<sup>2</sup>)。请注意，分块和流水线预填充只会改变重叠关系与延迟，不会改变注意力工作的总量。要降低注意力总成本，只有减少有效上下文，或使用局部注意力/稀疏注意力。例如，使用固定注意力窗口 <em>W</em> 可将成本降至 O(NW)。</p>
+          </div>
+          <p>简而言之，分块预填充以紧密交错的方式调度提示词预填充和 token 生成，将大批量预填充计算的高效率与流式解码的响应性结合起来。在许多工作负载下，它可以降低尾延迟，同时保持较高吞吐量。</p>
+        </div></section>
+        <section data-pdf-bookmark="Latency-Aware Scheduling and Dynamic Routing" data-type="sect2"><div class="sect2" id="ch16_latency_aware_scheduling_and_dynamic_routing_1757308074607043">
+          <h2>延迟感知调度与动态路由</h2>
+          <p>延迟感知调度可以分析<a contenteditable="false" data-primary="scheduling" data-secondary="latency-aware scheduling and dynamic routing" data-type="indexterm" id="ch16lat"/><a contenteditable="false" data-primary="latency" data-secondary="latency-aware scheduling and dynamic routing" data-type="indexterm" id="ch16lat2"/><a contenteditable="false" data-primary="dynamic routing" data-secondary="latency-aware scheduling" data-type="indexterm" id="ch16lat3"/><a contenteditable="false" data-primary="first in, first out (FIFO) scheduler" data-type="indexterm" id="ch16lat4"/><a contenteditable="false" data-primary="scheduling" data-secondary="first in, first out (FIFO) scheduler" data-type="indexterm" id="ch16lat5"/><a contenteditable="false" data-primary="inference" data-secondary="batching" data-tertiary="latency-aware scheduling" data-type="indexterm" id="ch16lat6"/>到达的请求，创建动态批次并进行路由，以尽量降低延迟。假设六个提示词同时到达一个双 GPU 推理系统，其长度依次为 6K、2K、6K、2K、2K 和 2K。下面比较朴素的先进先出（FIFO）调度器与延迟感知调度器。 </p>
+          <p>首先，FIFO 调度器根据到达顺序创建两个批次。批次 1 为 [6K, 2K, 6K]，发送到 GPU 1；批次 2 为 [2K, 2K, 2K]，发送到 GPU 2。结果汇总于<a data-type="xref" href="#ch16_table_6_1757308074586237">表 16-6</a>。</p>
+          <table id="ch16_table_6_1757308074586237">
+            <caption><span class="label">表 16-6　</span>长度依次为 [6K, 2K, 6K, 2K, 2K, 2K] 的提示词采用 FIFO 与延迟感知调度的对比</caption>
+            <thead>
+              <tr>
+                <th>GPU</th>
+                <th>提示词批次</th>
+                <th>自注意力 QK 操作数 T(N) = N(N + 1) ÷ 2</th>
+                <th>token 数 <em>N</em></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>GPU 1</td>
+                <td>6K, 2K, 6K</td>
+                <td>T(6K) + T(2K) + T(6K) = 18,003,000 + 2,001,000 + 18,003,000 = 38,007,000</td>
+                <td>14K</td>
+              </tr>
+              <tr>
+                <td>GPU 2</td>
+                <td>2K, 2K, 2K</td>
+                <td>3 × T(2K) = 3 × 2,001,000 = 6,003,000</td>
+                <td>6K</td>
+              </tr>
+            </tbody>
+          
+          </table>
+          <p>可以看到，FIFO 策略把前三个提示词 [6K, 2K, 6K] 发送到 GPU 1，约需执行 38,007,000 次自注意力 Q × K 点积，并处理 14,000 个 MLP token；GPU 2 则约需执行 6,003,000 次自注意力 Q × K 点积，并处理 6,000 个 MLP token。关键路径由 GPU 1 决定，约为 38,007,000 次自注意力 Q × K 点积。</p>
+          <p>相比之下，延迟感知调度器分析六个请求的预期延迟，将其重新排列为两个 [2K, 2K, 6K] 批次。在这种策略下，每块 GPU 的自注意力成本均为 22,005,000 次点积，并处理 10,000 个 MLP token，如<a data-type="xref" href="#ch16_table_7_1757308074586255">表 16-7</a>所示。</p>
+          <table id="ch16_table_7_1757308074586255">
+            <caption><span class="label">表 16-7　</span>对长度依次为 [6K, 2K, 6K, 2K, 2K, 2K] 的提示词进行延迟感知调度</caption>
+            <thead>
+              <tr>
+                <th>GPU</th>
+                <th>提示词批次</th>
+                <th>自注意力 QK 操作数 T(N) = N(N + 1) ÷ 2</th>
+                <th>token 数 <em>N</em></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>GPU 1</td>
+                <td>2K, 2K, 6K</td>
+                <td>T(2K) + T(2K) + T(6K) = 2,001,000 + 2,001,000 + 18,003,000 = 22,005,000</td>
+                <td>10K</td>
+              </tr>
+              <tr>
+                <td>GPU 2</td>
+                <td>2K, 2K, 6K</td>
+                <td>T(2K) + T(2K) + T(6K) = 2,001,000 + 2,001,000 + 18,003,000 = 22,005,000</td>
+                <td>10K</td>
+              </tr>
+            </tbody>
+        
+          </table>
+          <p>在这个简化成本模型中，关键路径上的自注意力工作量从 38,007,000 降至 22,005,000，减少约 42%。因此，延迟感知调度器有可能显著缩短 TTFT。由于它会考虑提示词长度、自注意力中呈三角形增长的 N(N + 1) ÷ 2 成本，以及 MLP 的 O(N) 成本，因此能够平衡计算权重并尽量降低总体延迟。例如在本例中，延迟感知<span class="keep-together">调度器</span>把 2K token 请求提前，使这些较轻的请求更早完成预填充并开始解码，而无须等待较重的 6K token 预填充完成。</p>
+          <div data-type="tip">
+            <p>这些计数假设采用只计算有效 token 的变长融合注意力内核，例如 FlashAttention，或使用 cuDNN 后端的 PyTorch scaled dot product attention（SDPA）。如果内核把序列填充到批次中的最大长度，那么注意力算术成本将接近批大小乘以该批次最长序列的 T(N)。在这种情况下，FIFO 与延迟感知策略之间的差异会缩小。</p>
+          </div>
+          <p>简而言之，如果批次中的到达顺序从全局角度看并不理想，朴素 FIFO 调度器可能使某块 GPU 负载过重。延迟感知调度器可以分析到达的请求，把它们重新排列成更加均衡的批次，以尽量降低延迟。</p>
+          <div data-type="tip">
+            <p>一些推理服务框架已经引入强化学习来在线调整调度策略。这是在此处所述延迟感知策略的基础上，针对不断变化的流量模式进行自动调优。<a contenteditable="false" data-primary="" data-startref="ch16lat" data-type="indexterm" id="id3935"/><a contenteditable="false" data-primary="" data-startref="ch16lat2" data-type="indexterm" id="id3936"/><a contenteditable="false" data-primary="" data-startref="ch16lat3" data-type="indexterm" id="id3937"/><a contenteditable="false" data-primary="" data-startref="ch16lat4" data-type="indexterm" id="id3938"/><a contenteditable="false" data-primary="" data-startref="ch16lat5" data-type="indexterm" id="id3939"/><a contenteditable="false" data-primary="" data-startref="ch16lat6" data-type="indexterm" id="id3940"/> </p>
+          </div>
+        </div></section>
+      </div></section>
+      <section data-pdf-bookmark="Systems-Level Optimizations" data-type="sect1"><div class="sect1" id="ch16_systems_level_optimizations_1757308074607097">
+        <h1>系统级优化</h1>
+        <p>系统级优化技术<a contenteditable="false" data-primary="inference" data-secondary="tuning performance" data-tertiary="systems-level optimizations" data-type="indexterm" id="id3941"/><a contenteditable="false" data-primary="inference" data-secondary="optimizations at the systems level" data-type="indexterm" id="id3942"/><a contenteditable="false" data-primary="systems-level optimizations for tuning inference" data-type="indexterm" id="id3943"/>包括重叠通信与计算、提高 GPU 利用率、管理功耗与热约束、处理错误，以及优化内存访问。总体目标是尽可能提高 GPU 执行有用工作的比例，即 goodput，而不是机械追求 100% 的繁忙率。本节还讨论吞吐量与延迟之间的权衡，以及如何找到适合生产 SLO 的平衡点。</p>
+        <section data-pdf-bookmark="Overlapping Communication and Computation" data-type="sect2"><div class="sect2" id="ch16_overlapping_communication_and_computation_1757308074607150">
+          <h2>重叠通信与计算</h2>
+          <p>正如本书多次所述，<a contenteditable="false" data-primary="inference" data-secondary="optimizations at the systems level" data-tertiary="overlapping communication and computation" data-type="indexterm" id="ch16ovr"/><a contenteditable="false" data-primary="systems-level optimizations for tuning inference" data-secondary="overlapping communication and computation" data-type="indexterm" id="ch16ovr2"/><a contenteditable="false" data-primary="overlapping communication and computation" data-secondary="inference tuning" data-type="indexterm" id="ch16ovr3"/>对于分布在多块 GPU 上的大型模型，重叠通信与计算是推理性能的关键。GB200/GB300 NVL72 等系统具有极高带宽（机架内 GPU 到 GPU 的 NVLink 聚合带宽最高约 130 TB/s），数据传输足够快，计算不易因等待数据而断粮，因此重叠更加有效。不过，即使使用 NVL72，也必须采用多个 CUDA 流和非阻塞 collective，以隐藏延迟，让全部 72 块 GPU 保持<span class="keep-together">忙碌——</span>即使在这种带宽下也一样。</p>
+          <div data-type="tip">
+            <p class="fix_tracking">实践中，可以启用 NCCL 的 GPUDirect RDMA <span class="keep-together">支持——</span>并使用 NCCL group 调用重叠多个小型 all-reduce 操作。此外，可以考虑使用 SHARP（在配备合适交换机的 <span class="keep-together">InfiniBand</span> 上可用），把归约操作卸载到网络结构中。这种优化在某些网络结构和拓扑上能够提高吞吐量；一些测试显示，大型 all-to-all<span class="keep-together">通信</span>的吞吐量约提升 10%～20%，但结果取决于具体配置。 </p>
+          </div>
+          <p>考虑一个需要在 GPU 之间传输数据的推理步骤（例如 MoE 的 all-to-all），或者仅仅是把提示词数据从 CPU 发送到 GPU，再把响应从 GPU 返回 CPU 以交付最终用户。在所有这些场景中，只要可能，就应在 GPU 执行其他工作时异步进行传输。</p>
+          <p>一个基本示例是使用独立 CUDA 流重叠计算与数据传输。例如，在专用传输流（配合页锁定主机内存）上启动 <code>cudaMemcpyAsync</code>，同时让计算内核在默认流上运行。 </p>
+          <div data-type="tip">
+            <p>通过 PCIe 或 NIC 传输时，务必使用页锁定主机缓冲区。这样 CUDA 驱动就能直接执行 DMA，并与计算重叠。</p>
+          </div>
+          <p>随后只在真正需要数据时使用 CUDA event 同步，避免 GPU 因 I/O 空闲。这样，数据传输使用非阻塞 CUDA 调用（例如配合页锁定内存）和 CUDA 流，GPU 不会停下来等待这些操作。在具备全双工 NVLink 带宽的现代 GPU 上，这种重叠可以大幅隐藏通信延迟；不过，仍应针对具体工作负载进行性能分析验证。</p>
+          <p>此处的数据传输可以包括把新的提示词嵌入从 CPU 发送到 GPU，或把最后一个 token 的 logits 从 GPU 移到 CPU。例如，GPU 计算出一批新 token 的 logits 后，可以立即异步把 logits 复制到 CPU 进行后处理（例如采样），或作为流式响应返回客户端；与此同时，立即启动下一个计算内核，处理仍在 GPU 上的另一批 token。 </p>
+          <p>在多节点场景中，可以把工作拆成区块，使 all-to-all 等通信 collective 与计算重叠。一些 MoE 运行时会把 token 批次拆成两半：专家处理前一半 token 时，同时开始发送后一半 token。 </p>
+          <p>专家处理完前一半时，后一半数据已经到达目标 GPU，因而无需等待即可继续。这要求相对于计算内核谨慎安排 NCCL 调用。 </p>
+          <p>例如，可以使用 CUDA event 指示批次的一半何时完成；此时启动该部分数据的 NCCL all-to-all，同时让下一部分继续计算。还可以使用 CUDA Graph 捕获这些异步模式，降低启动开销。由于 GPU 等待通信的空闲时间减少，利用率会得到改善。</p>
+          <p>另一个可以重叠的领域是 CPU 与 GPU 之间。例如，GPU 忙于生成下一个 token 时，CPU 可以并发准备下一个输入，或处理之前生成的 token 的结果。高度优化的推理引擎会让 CPU 端预处理（例如输入文本分词）与其他请求的 GPU 计算并行进行。例如，引擎可以准备下一批，同时与当前批的 GPU 计算重叠。</p>
+          <p>这听起来显而易见，但需要多线程架构：一个线程处理网络和排队，另一个线程启动 GPU 操作，还可以有另一个线程负责响应后处理等。Python 或 C++ 推理循环不应因等待本可并发执行的操作而阻止 GPU 启动新工作。</p>
+          <p>在流水线并行场景中，系统应让通信（流水线阶段之间）与每个阶段内部的计算重叠。例如，GPU 0 完成 token t 的部分工作后，可以向 GPU 1 发送激活值，同时开始为另一个序列处理 token t+1。 </p>
+          <p>只要使用的是不同资源，现代互连和框架就允许计算内核与数据传输重叠。应在推理流水线中使用多个 CUDA 流，让每个流水线阶段拥有独立流。这样，激活值的发送/接收就可以与其他流中针对不同微批次的计算并行进行，从而减少流水线气泡。</p>
+          <p>在网络方面，NVIDIA GPUDirect RDMA 等技术允许 InfiniBand NIC 直接读写 GPU 内存，无须 CPU 参与，也不需要经过主机内存中转。利用 GPUDirect 跨节点传输 KV 缓存或专家激活值，可以降低延迟和 CPU 开销。 </p>
+          <p>GPUDirect RDMA 去除了经由主机内存中转的步骤，使 NIC 的 DMA 引擎能够直接访问 GPU 内存。CPU 负责提交工作请求，但数据路径绕过 CPU，从而释放 CPU 核心执行其他任务。</p>
+          <p>考虑一个实际示例：使用 InfiniBand 在两个 NVL72 机架之间实现 MoE 层的 all-to-all 通信。如果先同步执行 all-to-all，再进行计算，在没有重叠时 GPU 利用率可能很低；但如果把 all-to-all 通信批次与计算重叠，就能显著提高 GPU 利用率。</p>
+          <p>在 MoE 层重叠 all-to-all 通信，需要把 token 批次拆成两半，并在第一半 token 的专家仍在计算时开始交换第二半。这样便可把通信延迟隐藏在交错的<span class="keep-together">计算</span>中。</p>
+          <p>基本做法是：每块 GPU 先为已经拥有的 token 计算本地专家输出，同时接收另一节点发来的剩余 token。完成第一批时，第二批已经到达，可以立即开始计算。 </p>
+          <p>这种优化相当底层，涉及 NCCL group 与 CUDA 流之间的 CUDA event 同步，但能够带来可观的吞吐量改善和更平滑的延迟。实践中，先把 NCCL all-to-all 作为 NCCL group 的一部分启动，不等待其完成；然后立即启动下一个计算内核，并使用 CUDA event 检查完成状态。 </p>
+          <p>对于流式输出，还可以让 I/O 与计算重叠。例如，一旦生成了几个 token，就通过套接字发送给最终用户，同时模型已经开始处理后续 token。这样就能把网络延迟（例如把响应发回用户）隐藏在计算（例如生成后续 token）之后，使用户看到没有停顿的稳定流。</p>
+          <p>所有现代 LLM 推理引擎都采用这种向客户端非阻塞流式传输的模式，使用独立线程通过 SSE/WebSockets 发送 token 更新。</p>
+          <div data-type="tip">
+            <p>如果自行实现流式输出，务必使用线程安全队列或锁，把生成的 token 交给网络线程。不要在交接过程中引入同步问题，这类问题往往很难定位和调试。 </p>
+          </div>
+          <p>如果不进行重叠，系统会先生成少量 token，然后在把 token 发回最终用户时让 GPU 空闲。更好的做法是由异步 I/O 线程从响应缓冲区取出输出并流式返回用户，使推理调度线程能够继续提交更多 token 生成工作。这样就把 token 生成（计算）与输出传输（I/O）组成流水线。需要注意，主机线程与 CUDA 流是不同概念。</p>
+          <p>简而言之，重叠通信与计算需要用流水线思维，并尽可能使用异步操作。现代 GPU 和网络硬件提供了相应原语，包括 CUDA 流、非阻塞 collective 和 RDMA。在内核内部，CUDA 设备端原语（例如与 <code>cuda::barrier</code> 配合使用的 <code>cuda::memcpy_async</code>，后者来自 CUDA pipeline 头文件）有助于让全局内存到共享内存的移动与计算重叠。（注意：主机到设备以及设备到主机的传输，仍需显式 CUDA 流和页锁定主机内存才能与计算重叠。）高效的 LLM 推理系统会充分利用这些特性。 </p>
+          <p>简而言之，只要可能，就应始终让通信与计算重叠。否则，即使采用 NVLink/NVSwitch，扩展到许多 GPU 时仍会低于硬件峰值性能。这些优化通常对最终用户不可见，因为模型输出不会改变；但它们对于榨取推理集群的每一点性能、保持用户对应用的体验至关重要。<a contenteditable="false" data-primary="" data-startref="ch16ovr" data-type="indexterm" id="id3944"/><a contenteditable="false" data-primary="" data-startref="ch16ovr2" data-type="indexterm" id="id3945"/><a contenteditable="false" data-primary="" data-startref="ch16ovr3" data-type="indexterm" id="id3946"/> </p>
+        </div></section>
+        <section data-pdf-bookmark="Maximizing GPU Utilization and Throughput Versus Latency Trade-Offs" data-type="sect2"><div class="sect2" id="ch16_maximizing_gpu_utilization_and_throughput_versus_l_1757308074607201">
+          <h2>最大化 GPU 利用率：吞吐量与<span class="keep-together">延迟的权衡</span></h2>
+          <p>性能调优的最终目标<a contenteditable="false" data-primary="inference" data-secondary="optimizations at the systems level" data-tertiary="GPU utilization versus latency" data-type="indexterm" id="id3947"/><a contenteditable="false" data-primary="systems-level optimizations for tuning inference" data-secondary="GPU utilization versus latency" data-type="indexterm" id="id3948"/><a contenteditable="false" data-primary="GPUs" data-secondary="utilization versus latency" data-type="indexterm" id="id3949"/><a contenteditable="false" data-primary="latency" data-secondary="GPU utilization versus" data-type="indexterm" id="id3950"/><a contenteditable="false" data-primary="performance metrics" data-secondary="about ultimate goal of performance tuning" data-type="indexterm" id="id3951"/>是让 GPU 尽可能忙于执行矩阵乘法等有用工作，同时尽量减少空闲和未充分利用的 GPU 资源。前面介绍的批处理、并行和重叠等技术，都是为了实现接近 100% 的 GPU 利用率。 </p>
+          <p>GPU 利用率百分比，尤其是有用利用率（goodput），是需要持续监控的重要性能指标<a contenteditable="false" data-primary="performance metrics" data-secondary="GPU utilization percentage" data-type="indexterm" id="id3952"/>。虽然希望有用利用率达到 100%，但必须确保不违反延迟等 SLO。利用率提高到某个程度后，可能会出现收益递减。</p>
+          <p>假设一个采用朴素实现的推理服务器当前 GPU 利用率为 60%。调查发现，解码阶段受单线程顺序处理所有序列所限，形成瓶颈。引入使用多个流的并发解码后，通过交错解码（如前文所述），GPU 利用率提高到 95%，吞吐量翻倍。这表明并发解码发挥了作用，但具体增益需要实测。</p>
+          <p>可以把更多请求放入大型批次，尝试达到 100% 利用率，但这会拖慢单个查询。通常可以测试不同批大小，绘制吞吐量—延迟曲线。曲线上往往有一个明显的“膝点”，从这里开始，吞吐量收益会付出过高的延迟代价。 </p>
+          <p>要在吞吐量—延迟曲线上找到最佳点，首先应开启完整并发并尽可能重叠操作，确认硬件能够保持忙碌。然后逐步增大批大小，直到资源利用率达到最大。此时测量单查询延迟，再适度缩小批大小（例如从 16 降到 8），以满足响应时间目标。</p>
+          <p>建议同时监控 p50 中位延迟以及 p95、p99 尾延迟。细小抖动和批次填充不均可能产生长尾异常值，在 p95/p99 中尤为明显。在承载大量请求的大型集群中，即使 0.1% 的异常值也可能频繁出现。因此，衡量用户体验时，p99 甚至 p99.9 可能比 p50 更重要。此外，为满足严格 SLO，长尾延迟常常迫使系统过度配置资源；降低尾延迟因而具有直接的成本收益。</p>
+          <div data-type="tip">
+            <p>一个实用经验是，把批大小限制在峰值吞吐量对应值略低的位置。团队通常以最大峰值吞吐量的 90% 为目标，这称为<em>余量缓冲</em>。这是因为全速运行可能造成不可预测的延迟峰值。例如，如果将批大小提高到 16 个请求后，少数请求开始出现轻微延迟增加，就应把批上限降到 8。这样可以获得更一致的延迟，而吞吐量只会略微下降。 </p>
+          </div>
+          <p>一些推理系统可以根据这些指标即时动态调整批大小。第 <a data-type="xref" data-xrefstyle="select:labelnumber" href="ch17.html#ch17_scaling_disaggregated_prefill_and_decode_for_infer_1757308075339224">17</a>～<a data-type="xref" data-xrefstyle="select:labelnumber" href="ch19.html#ch19_dynamic_and_adaptive_inference_engine_optimization_1757308078896371">19</a> 章将介绍这一技术及更多自适应推理<span class="keep-together">策略。</span></p>
+          <p>需要记住，GPU 持续运行在 100% 可能触及功耗和温度上限而发生降频。有时，使用高效内核并以 90% 利用率运行，反而会超过发生降频时的 100% 利用率。下面讨论 GPU 的功耗和热约束——CPU 应用开发者和系统工程师常常不会考虑这些特性。</p>
+        </div></section>
+        <section data-pdf-bookmark="Power and Thermal Constraints" data-type="sect2"><div class="sect2" id="ch16_power_and_thermal_constraints_1757308074607247">
+          <h2>功耗和热约束</h2>
+          <p>还需考虑<a contenteditable="false" data-primary="inference" data-secondary="optimizations at the systems level" data-tertiary="power and thermal constraints" data-type="indexterm" id="id3953"/><a contenteditable="false" data-primary="systems-level optimizations for tuning inference" data-secondary="power and thermal constraints" data-type="indexterm" id="id3954"/><a contenteditable="false" data-primary="power and thermal constraints on inference" data-type="indexterm" id="id3955"/><a contenteditable="false" data-primary="thermal constraints on inference" data-type="indexterm" id="id3956"/>功耗和热约束。如果冷却不足，让 GPU 持续运行在 100% 会导致温度降频。现代 GPU 系统通常采用液冷，以减少温度降频并维持性能；如果使用较旧的风冷系统，就要留意降时钟。</p>
+          <p>GPU 利用率较高时，可以使用 <code>nvidia-smi</code> 或 DCGM 监控降时钟。具体来说，DCGM 通过 <code>DCGM_FI_DEV_CLOCK_THROTTLE_REASONS</code> 提供 XID 降频原因；当 GPU 因功耗而降频时，<code>nvidia-smi</code> 会显示“Pwr Throttle”标志。</p>
+          <p>GPU 还可能触及板卡功耗上限<a contenteditable="false" data-primary="GPUs" data-secondary="power limits" data-type="indexterm" id="id3957"/><a contenteditable="false" data-primary="power monitoring" data-secondary="power limits" data-type="indexterm" id="id3958"/>，尤其是在使用加速时钟时。现代 GPU 在加速状态下功耗显著增加，因此应监控 GPU 是否因触及功耗上限而降时钟。发生这种情况时，GPU 性能会<span class="keep-together">低于理想水平</span>。务必监控 DCGM 的 <code>DCGM_FI_DEV_POWER_USAGE</code> 指标，并在超出正常范围时告警。 </p>
+          <div data-type="tip">
+            <p>如果 GPU 持续触及功耗上限，可以考虑启用 Dynamic Boost 模式，或略微降低时钟，以避免可能导致延迟骤升的温度降频。 </p>
+          </div>
+          <p>在软件层面，可以通过增加极短的批间延迟稍微降低利用率，也可以限制并发度。现代 GPU 还支持时钟上限设置。因此，与其增加延迟，不如使用 <code>nvidia-smi -lgc</code> 等命令略微限制 GPU 时钟，避免触及温度上限。这样只会小幅降低吞吐量，却能带来更一致的性能。</p>
+          <p>从硬件角度，可以改进冷却；如果冷却已经足够，也可以提高功耗上限。要提高功耗上限，可使用 <code>nvidia-smi -pl</code> 或调整 GPU 加速设置。</p>
+          <p>这些都说明，把真实系统推到极限可能产生严重影响性能的意外副作用。建议在推理引擎中加入“boost-off”标志，使系统检测到功耗或温度约束导致降频、性能下降时，能够即时应用软件层面的规避措施。在完全恢复稳定性和性能之前，让系统以略低利用率、更低温度运行。 </p>
+        </div></section>
+        <section class="pagebreak-before" data-pdf-bookmark="Error Handling" data-type="sect2"><div class="sect2" id="ch16_error_handling_1757308074607293">
+          <h2 class="less_space">错误处理</h2>
+          <p>错误处理通常不被视为性能问题，但高效处理错误十分重要<a contenteditable="false" data-primary="systems-level optimizations for tuning inference" data-secondary="error handling" data-type="indexterm" id="id3959"/><a contenteditable="false" data-primary="performance metrics" data-secondary="inference tuning" data-tertiary="error handling" data-type="indexterm" id="id3960"/><a contenteditable="false" data-primary="error handling" data-secondary="inference system" data-type="indexterm" id="id3961"/>。利用率已经很高的推理系统，处理大量错误峰值的余量更小，尤其是因为错误处理通常不是系统中最优的代码路径。</p>
+          <p>在故障场景中，关键是快速失败：如果请求注定会出错，最好立即返回错误，不要因缓慢失败浪费 GPU 时间。务必在推理调用周围实现适当的异常处理和超时，以捕获挂起或崩溃。</p>
+          <p>此外，建议实现背压。这意味着错误激增时，可以开始拒绝新请求，或减小批大小，为系统留出恢复余量。</p>
+          <p>在大规模环境中，建议预留余量，增加一些大部分时间处于空闲状态的额外副本。这些副本可以充当错误峰值或其他意外情况的缓冲。虽然自动扩缩容可能是降低成本的首选，但要记住，扩缩容需要时间来配置新资源。 </p>
+          <p>空闲容量需要成本，但失去客户或违反 SLA 的代价通常更高。稳态期间建议至少预留 10%～15% 的缓冲容量；对于不能停机的关键服务，建议预留 100% 缓冲容量，即完整的一套集群副本。</p>
+          <p>预热且空闲、能够按需立即承载额外负载的节点没有替代品。失去最终用户的成本，很可能高于保留少量空闲副本、随时应对额外意外负载的成本。</p>
+        </div></section>
+        <section data-pdf-bookmark="Memory" data-type="sect2"><div class="sect2" id="ch16_memory_1757308074607336">
+          <h2>内存</h2>
+          <p>资源利用优化同样适用于内存<a contenteditable="false" data-primary="systems-level optimizations for tuning inference" data-secondary="memory" data-type="indexterm" id="id3962"/><a contenteditable="false" data-primary="inference" data-secondary="optimizations at the systems level" data-tertiary="memory" data-type="indexterm" id="id3963"/><a contenteditable="false" data-primary="memory" data-secondary="inference tuning" data-type="indexterm" id="id3964"/>。GPU 内存容量和带宽的增长相对渐进，而模型规模和上下文长度却快速增长。因此，内存仍是需要优化的宝贵资源。</p>
+          <p>因此，应有效利用 GPU 内存和内存带宽。内存通常由模型权重和 KV 缓存占用。推理期间，最好始终将模型权重保留在 GPU HBM 中。如果在 CPU DRAM 或 NVMe 存储之间换入换出内存，就会产生额外缺页和传输延迟。 </p>
+          <p>即使是 Grace Blackwell 和 Vera Rubin 等现代 CPU-GPU 超级芯片，也存在这种额外传输延迟。因此，高性能 LLM 推理引擎会显式管理内存，而不是依赖按需换页。</p>
+          <p>压缩是降低推理系统内存用量的有效技术，尤其适用于预填充阶段为每个进入系统的查询生成的 KV 缓存。 </p>
+          <p>由于 KV 缓存大小随查询数量和输入规模增长，应考虑 KV 缓存压缩和量化。KV 缓存压缩/量化意味着在模型能够承受精度损失时，以较低精度存储键和值。虽然并不理想，但对于很少使用的 KV 缓存数据，卸载也是一种选择。</p>
+        </div></section>
+        <section data-pdf-bookmark="KV Cache Offloading and Memory Pool Allocation" data-type="sect2"><div class="sect2" id="ch16_kv_cache_offloading_and_memory_pool_allocation_1757308074607383">
+          <h2>KV 缓存卸载和内存池分配</h2>
+          <p>将很少使用的 KV 缓存条目换出（分页换出）到 CPU 内存或磁盘后，<a contenteditable="false" data-primary="inference" data-secondary="optimizations at the systems level" data-tertiary="KV cache" data-type="indexterm" id="id3965"/><a contenteditable="false" data-primary="systems-level optimizations for tuning inference" data-type="indexterm" id="id3966"/><a contenteditable="false" data-primary="KV cache" data-secondary="inference tuning" data-type="indexterm" id="id3967"/>推理引擎就能为更活跃的数据腾出空间。这类似于虚拟内存的处理方式。 </p>
+          <p>例如，vLLM 使用受管理的 KV 缓存内存池和分页式块管理<a contenteditable="false" data-primary="KV cache" data-secondary="vLLM PagedAttention" data-type="indexterm" id="id3968"/><a contenteditable="false" data-primary="vLLM" data-secondary="PagedAttention" data-type="indexterm" id="id3969"/><a contenteditable="false" data-primary="PagedAttention (vLLM)" data-type="indexterm" id="id3970"/>；CPU swap/offload 可由相应配置或扩展实现，但 PagedAttention 本身不等同于默认把 KV 卸载到 NVMe。类似地，SGLang RadixAttention 使用树状缓存并可惰性淘汰低优先级前缀；NVIDIA Dynamo 生态也提供 KV 缓存卸载和内存管理机制，具体能力取决于所用后端和版本。</p>
+          <p>如果没有良好的 KV 缓存分配器，当不同长度的请求流经系统时，内存碎片可能过多（例如约 20%～30%）。在发生 OOM 之前，这会限制系统能够处理的请求数。应使用大内存池分配器，正如前面章节所述。</p>
+          <p>采用适当的内存分页策略，可以把碎片降低到可容忍的几个百分点。这样就能在 GPU 中装入更多上下文，同时保持高利用率而不使系统崩溃。</p>
+          <p>借助适当的 KV 缓存内存管理，现代推理引擎可以服务更多并发用户，而不会耗尽 GPU 内存。它们管理自己的 KV 缓存内存池，并把数据卸载到 CPU 和 NVMe 存储，从而实现接近满载的内存利用率和极少的<span class="keep-together">碎片</span>。</p>
+          <p>代价是：上下文再次活跃并需要换入时，会增加一些数据传输延迟。不过，与请求总延迟相比，这项开销通常较小。 </p>
+          <p>内存利用率和计算利用率相辅相成。内存管理不善会浪费内存，使 GPU 无法通过更多并发任务得到充分利用。尽可能把相关数据保留在 GPU 上，系统就能服务大量并发请求。 </p>
+          <p>内存管理不善会在峰值负载下造成反复 OOM 崩溃，使 GPU 从资源池中退出，并引发级联延迟问题。通过适当的内存管理避免 OOM，才能最大化利用率并保持集群稳定。</p>
+          <p>简而言之，高效内存管理可以提高有效吞吐量、减少内存碎片、避免意外 OOM，并允许更多并发在途请求，尤其适用于高吞吐场景。 </p>
+        </div></section>
+      </div></section>
+      <section data-pdf-bookmark="Quantization Approaches for Real-Time Inference" data-type="sect1"><div class="sect1" id="ch16_quantization_approaches_for_real_time_inference_1757308074607433">
+        <h1>实时推理的量化方法</h1>
+         <p>提高推理性能最有效的方法之一<a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-type="indexterm" id="ch16qu"/><a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-type="indexterm" id="ch16qu2"/>是降低精度。这会立即减少内存用量和内存带宽利用，并提高计算速度。 </p>
+         <p>量化使用更少的位数表示<a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-tertiary="about quantization" data-type="indexterm" id="id3971"/><a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-tertiary="about quantization" data-type="indexterm" id="id3972"/>模型权重，有时也表示激活值。现代 NVIDIA GPU 通过低精度 Tensor Core 原生支持 FP16、FP8 和 FP4 等格式的低精度算术。 </p>
+         <p>本节专门讨论推理量化技术，包括<a href="https://oreil.ly/LBvIn">GPTQ</a>、<a href="https://oreil.ly/qLuI7">AWQ</a>、<a href="https://oreil.ly/olabX">SpQR 及其他结构化稀疏感知方法</a>等仅权重量化方法，以及同时降低权重和激活值精度的方法。具体而言，GPTQ 和 AWQ 已在实践中证明非常有效。</p>
+         <p>对于许多大型模型，使用 GPTQ 进行 4 位仅权重量化，在特定校准数据和评测任务上可以保留 FP16 模型 99% 以上的准确率，并可能带来约 2 倍推理加速和约 4 倍的模型体积缩小。AWQ 还能改善 3～4 位量化的准确率。这些技术已集成到 Hugging Face Transformers、PyTorch、vLLM 等许多 AI 框架中，并支持直接加载 GPTQ 和 AWQ 量化模型。</p>
+        
+        
+<div data-type="tip">
+      <p>量化收益取决于工作负载。不要假定每条低精度路径都更快；实际收益取决于硬件、内核覆盖范围、模型架构、序列长度分布以及批处理和并发组合。在投入生产前，务必在准确的服务配置上验证每条量化路径。</p>
+</div>
+        
+        <p>下面讨论使用低精度格式时准确率与性能之间的权衡，以及如何将量化有效、安全地集成到服务工作流中。</p>
+        <section data-pdf-bookmark="Reducing Precision from FP16 to FP8 and FP4" data-type="sect2"><div class="sect2" id="ch16_reducing_precision_from_fp16_to_fp8_and_fp4_1757308074607483">
+          <h2>将精度从 FP16 降至 FP8 和 FP4</h2>
+          <p>最初，LLM 推理从 FP32 转向 TF32、FP16 或 BF16 等低精度格式后获得了显著收益<a contenteditable="false" data-primary="FP4, FP8, FP16" data-secondary="inference quantization" data-type="indexterm" id="id3973"/><a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-tertiary="reducing precision" data-type="indexterm" id="id3974"/><a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-tertiary="reducing precision" data-type="indexterm" id="id3975"/><a contenteditable="false" data-primary="precision" data-secondary="inference quantization" data-type="indexterm" id="id3976"/>。例如，NVIDIA Tensor Core 使用 FP16 时的吞吐量可达到 FP32 的约 2 倍，原因是将半精度乘加操作融合到专用 Tensor Core 硬件流水线中，从而提高数学运算吞吐量；实际准确率损失仍取决于模型和工作负载。</p>
+          <p>FP8 将精度进一步降至 8 位浮点。与 FP16/BF16 相比，它可将存储占用减半；在支持相应 FP8 Tensor Core 路径的 GPU 和内核上，每周期可执行更多低精度乘加，数学吞吐量可能进一步提高。</p>
+          <p>在 PyTorch 中，仅通过 <code>torch.set_float32_matmul_precision("high")</code> 启用 TF32 数学运算就可能获得中等加速；若要充分利用 8 位和 4 位精度，则可使用 NVIDIA Transformer Engine（TE）提供的支持。TE 以<a href="https://oreil.ly/-DsQN">库</a>的形式提供 FP8 和 FP4 内核，使现有代码只需少量修改即可使用这些低精度。</p>
+          <p>NVIDIA TE 会在这些低精度下自动管理逐张量缩放因子。推理时，服务端可以以 FP16 加载模型，却使用 FP8 矩阵乘法。 </p>
+          <p>TE 会对每个张量应用缩放，以维持数值稳定性。缩放因子通常有两种确定方式：使用训练期间的代表性数据进行固定的预先校准，称为<em>静态校准</em>；或者动态计算、跟踪张量最大绝对值的方式，称为<em>基于 amax 的动态缩放</em>。<a data-type="xref" href="#ch16_figure_7_1757308074576550">图 16-7</a>展示了 TE 如何使用范围分析、缩放因子和目标格式进行精度转换。</p>
+         
+          <p>如果需要更高压缩率，FP4 在减少模型权重存储和流量方面优于 FP8。计入缩放元数据和打包后，有效压缩通常约为 FP8 的 1.8 倍、FP16 的 3.5 倍；但实际比率取决于格式和实现。由于 FP4 动态范围非常有限，要实现可靠的 FP4 推理，需要逐通道缩放，或使用 GPU TE 支持的逐块<em>微缩放</em>等校准方法。这些技术有助于在大型网络中使用 FP4，同时尽量减少准确率损失。</p>
+           <figure><div class="figure" id="ch16_figure_7_1757308074576550">
+            <img alt="展示 NVIDIA Transformer Engine 在 Transformer 层中使用范围分析、缩放因子和自适应格式转换进行精度变换的示意图。" src="assets/aisp_1607.png"/>
+            <h6><span class="label">图 16-7　</span>NVIDIA Transformer Engine（TE）在 Transformer 层中使用范围分析、缩放因子和目标格式进行精度转换</h6>
+          </div></figure>
+        </div></section>
+        <section data-pdf-bookmark="Weight-Only Quantization (GPTQ, AWQ)" data-type="sect2"><div class="sect2" id="ch16_weight_only_quantization_gptq_awq_1757308074607530">
+          <h2>仅权重量化（GPTQ、AWQ）</h2>
+          <p>现代 LLM 服务栈中的仅权重量化<a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-tertiary="weight-only quantization" data-type="indexterm" id="id3977"/><a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-tertiary="weight-only quantization" data-type="indexterm" id="id3978"/><a contenteditable="false" data-primary="FP4, FP8, FP16" data-secondary="inference quantization" data-tertiary="weight-only quantization" data-type="indexterm" id="id3979"/><a contenteditable="false" data-primary="precision" data-secondary="inference quantization" data-tertiary="weight-only quantization" data-type="indexterm" id="id3980"/>通常使用 GPTQ 或 AWQ 等方法把权重压缩为 4 位整数，同时让激活值保持 FP8、FP16 或 INT8 等较高精度。与 FP16 相比，这可将权重内存占用降至约四分之一，将权重带宽需求至少减半；在校准得当的情况下，准确率损失通常较小。</p>
+          <p>NVIDIA 的 FP4 实现正式名称为 <em>NVFP4</em>，本书简称 <em>FP4</em>，它在硬件中采用逐块微缩放。NVIDIA TE 提供块粒度 NVFP4 微缩放的硬件支持。</p>
+          
+<div data-type="tip">
+      <p>应根据内核使用逐张量或逐通道缩放。建议为激活值探索逐张量缩放，为权重探索逐通道缩放。例如，使用 FP8 E4M3 量化 KV 缓存时，常采用逐张量缩放。</p>
+</div>
+          <p class="pagebreak-before">逐块微缩放不为整个张量使用单一缩放因子，而是为张量内每个固定大小的块（通常为 32 个元素）维护独立 scale。这些 scale 会适应局部数值分布；与单一 scale 量化相比，可以更好地保留数值范围并减少量化误差。</p>
+          <div data-type="tip">
+            <p>始终使用能够反映推理工作负载的校准数据进行量化。仅在训练数据子集上进行一次性校准，可能无法捕获运行时使用模式。 </p>
+          </div>
+          <p>实践中，GPTQ（训练后量化）和 AWQ 常用于 LLM 的 4 位权重；使用代表性校准数据时，特定任务上的准确率损失可能很小。Hugging Face 等提供的开源工具可以自动应用这些技术。 </p>
+          <p>MoE 专家结构使权重量化更具吸引力，因为使用低精度权重后，内存可以容纳更多专家，从而减少专家与 CPU 内存之间的换入换出。如有需要，还可以使用规模更大、活跃专家更多、专家副本更多的模型。</p>
+          <p>GPTQ 等训练后量化（PTQ）工具使用近似二阶算法逐层把权重量化到 3～4 位。在部分模型和硬件上，这可以在数个 GPU 小时内完成，并保持较小的准确率退化。较新的 GPTQ 变体通过非对称校准和并行计算进一步改进算法，以减少量化误差，并将高效低位支持扩展到更大的模型。</p>
+          <p>AWQ 会识别一小部分“显著”权重通道。显著通道会产生较大的激活幅值，对模型<span class="keep-together">输出</span>产生不成比例的影响。 </p>
+          <p>AWQ 在把全部权重转换为 4 位精度（例如 INT4）之前，使用通道专用缩放来保护这些通道。支持相应量化格式和内核的运行时会使用这些缩放因子，以尽量保持模型保真度。</p>
+          <div data-type="tip">
+            <p>PyTorch 等 AI 框架以及 vLLM、TensorRT-LLM 等推理引擎通常支持加载 GPTQ 和 AWQ 量化模型检查点，但具体格式和内核兼容性取决于版本。 </p>
+          </div>
+        </div></section>
+        <section data-pdf-bookmark="Activation Quantization" data-type="sect2"><div class="sect2" id="ch16_activation_quantization_1757308074607574">
+          <h2>激活量化</h2>
+          <p>将激活值与权重一同量化<a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-tertiary="activation quantization" data-type="indexterm" id="id3981"/><a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-tertiary="activation quantization" data-type="indexterm" id="id3982"/>，可以让 GEMM 输入乃至累加器使用较低精度，从而改善性能，并减少注意力 KV 缓存和 MLP 层中间激活值的内存流量。 </p>
+          <p>不过，激活值分布会随输入显著变化，因此若没有适当微调或校准，激活量化可能很困难。一种折中方案是使用经过校准的 INT8 激活值。NVIDIA INT8 模式采用逐张量校准；TensorRT 会从代表性校准数据生成的激活直方图中选择缩放因子。</p>
+          <p>SmoothQuant 是一种面向 8 位激活量化的训练后量化方法<a contenteditable="false" data-primary="SmoothQuant" data-type="indexterm" id="id3983"/>。它通过简单的行/列缩放算法，将部分量化难度从激活值迁移到权重，使权重和激活值都能使用 INT8，而无须完整量化感知训练。在特定模型和评测中，这可实现准确率损失较低（例如低于 1%）的完整 INT8 推理；仍需要代表性校准数据确定迁移强度。</p>
+          <div data-type="tip">
+            <p>一些实验表明，先使用 SmoothQuant 量化激活值，再对权重应用 GPTQ/AWQ，在低精度下可能更有利于保持准确率；具体组合需要按模型和内核验证。 </p>
+          </div>
+        </div></section>
+        <section data-pdf-bookmark="Post-Training Quantization Workflow" data-type="sect2"><div class="sect2" id="ch16_post_training_quantization_workflow_1757308074607619">
+          <h2>训练后量化工作流</h2>
+          <p>前面介绍的量化技术<a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-tertiary="post-training quantization workflow" data-type="indexterm" id="id3984"/><a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-tertiary="post-training quantization workflow" data-type="indexterm" id="id3985"/>是在训练后应用的，与模型训练期间进行的量化感知训练相对。典型工作流是先以 FP16/FP32 训练或微调模型，再在代表性数据集上运行 GPTQ 或 AWQ 等训练后校准脚本，确定量化参数，最后把量化后的模型权重加载到推理引擎中提供服务。 </p>
+          <p>如有需要，还可以进行小规模微调以恢复损失的准确率；GPTQ 和 AWQ 是否需要微调，取决于模型、位宽和任务。如果需要完整 QAT，可以在模型图中加入“伪量化”操作并训练若干轮次，以模拟低精度数学运算。这有助于评估该精度下的预期准确率。</p>
+          <div data-type="tip">
+            <p>实践中，LLM 的量化感知微调计算成本很高，并不总是可行。不过，可以使用较小的校准数据集（例如 1,000 个提示词），结合百分位裁剪或 LMS（损失感知量化）等技术调整量化 scale，而无须完整重新训练。数据量只是示例，应按工作负载覆盖度验证。 </p>
+          </div>
+          <p>需要特别谨慎地权衡压缩率与模型鲁棒性。量化可能放大某些错误。例如，如果模型对某项事实知识的掌握本来就处于临界状态，量化可能使其给出错误答案。 </p>
+          <p>始终应在下游任务上验证，因为 PTQ 所作假设可能忽略细微的分布偏移。使用低精度量化模型时，应对响应进行充分 A/B 测试，确保评测没有显示质量或安全性退化。如果出现退化，就应让模型保持较高精度，或尝试在量化形式下进行轻量微调以恢复性能。</p>
+        </div></section>
+        <section data-pdf-bookmark="Combining Weight and Activation Quantization" data-type="sect2"><div class="sect2" id="ch16_combining_weight_and_activation_quantization_1757308074607664">
+          <h2>联合使用权重与激活量化</h2>
+          <p>把激活值量化到 4 位仍然很有挑战<a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-tertiary="combining weight and activation quantization" data-type="indexterm" id="id3986"/><a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-tertiary="combining weight and activation quantization" data-type="indexterm" id="id3987"/>。将低精度权重量化与较高精度激活量化结合，通常能在节省内存、计算效率和准确率之间取得较好平衡。因此，许多生产系统会把 4 位仅权重量化（例如 GPTQ/AWQ）与 8 位激活量化结合使用。</p>
+          <p>具体来说，在一种 W4A8（8 位激活）变体中，运行时解包 INT4 权重，使用学习或校准得到的 scale 将其转换为 FP8 输入，再在 FP8 Tensor Core 上执行矩阵乘法。TensorRT-LLM 等推理引擎提供这种混合路径；校准得当时，特定评测中的准确率损失可能很小。该方法保留 FP8 激活值的动态范围，同时使权重原始位宽相对 FP16 减少约 4 倍，但实际存储比率还需计入元数据和打包。</p>
+          <p>相比之下，传统 INT4/INT8 W4A8 方案将 4 位整数（INT4）权重与 8 位整数（INT8）激活值配对，并在 INT8 Tensor Core 上运行计算。这种方法依赖基于直方图的校准，把激活值范围映射到 INT8，并尽量减少质量损失。 </p>
+          <p>现代整数 Tensor Core 流水线上的 INT4/INT8 内核可能提供略高的原始吞吐量，但需要谨慎校准激活值，而且动态范围不如 FP8。 </p>
+          <p>INT4 与 FP8 混合方法试图结合两者优点。该方法会解包 4 位整数（INT4）权重，将其反量化为 FP8 输入，再在 FP8 Tensor Core 上执行计算。这种混合 W4A8 变体在受支持的现代 GPU、融合内核和适当校准下，可能获得较小准确率损失、较低权重带宽需求和良好吞吐量。 </p>
+          <p>现代 GPU 的生产环境常见两条不同低精度路径。第一，NVFP4 工作流使用 FP4 块，并由 Transformer Engine 或 TensorRT 管理微缩放。第二，W4A8 工作流使用 INT4 权重和 FP8 或 INT8 激活值，并在 TensorRT-LLM 中采用融合反量化执行。应根据模型校准结果和准确率目标选择路径。</p>
+          <p class="pagebreak-before">总之，量化是降低推理成本的有效方法之一。模型体积缩小 2 倍或更多并不自动意味着每块 GPU 的吞吐量翻倍；实际收益取决于工作负载是否受权重带宽限制，以及是否有匹配的融合内核。GPTQ、AWQ 和 SmoothQuant 等技术有助于在较小准确率损失下获得这些收益，但“低于 1%”等结果只适用于特定模型和评测。 </p>
+          <div data-type="tip">
+            <p>建议先从 8 位权重开始，再评估 4 位仅权重量化以获得额外收益。只有在需要进一步优化并愿意投入校准时间时，再转向 W4A8。 </p>
+          </div>
+          <p>下一步是消除转换开销。把量化—反量化操作直接融合进计算内核，有助于保留量化带来的收益。</p>
+        </div></section>
+        <section data-pdf-bookmark="Fusing Quantization-Dequantization Steps into the Execution Graph" data-type="sect2"><div class="sect2" id="ch16_fusing_quantization_dequantization_steps_into_the_1757308074607711">
+          <h2>将量化—反量化步骤融合进执行图</h2>
+          <p>现代推理引擎使用<a contenteditable="false" data-primary="inference" data-secondary="quantization for real-time inference" data-tertiary="quant-dequant steps into execution graph" data-type="indexterm" id="id3988"/><a contenteditable="false" data-primary="quantization" data-secondary="inference optimization" data-tertiary="quant-dequant steps into execution graph" data-type="indexterm" id="id3989"/> TE 执行权重打包，并提供高效混合精度数学运算；具体格式仍可能需要校准或 scale 管理。这些推理引擎通常实现 CUDA/Triton 内核，在需要时把“量化—反量化”步骤融合进执行图。</p>
+          <p>如果独立 Quantize/Dequantize 内核会引入过多额外启动，抵消低精度数学运算的延迟和带宽收益，就应把这些量化—反量化步骤融合进执行图。这对于缺少原生融合 INT8 支持的推理后端尤其有用。 </p>
+          <p>对于高吞吐推理流水线，把量化—反量化融合进主要计算内核尤其有价值，可以消除转换造成的瓶颈、恢复性能。下面探索现代 AI 推理服务引擎支持的各种应用层优化。<a contenteditable="false" data-primary="" data-startref="ch16qu" data-type="indexterm" id="id3990"/><a contenteditable="false" data-primary="" data-startref="ch16qu2" data-type="indexterm" id="id3991"/></p>
+        </div></section>
+      </div></section>
+      <section data-pdf-bookmark="Application-Level Optimizations" data-type="sect1"><div class="sect1" id="ch16_application_level_optimizations_1757308074607777">
+        <h1>应用层优化</h1>
+        <p>除了核心模型和系统优化，<a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-type="indexterm" id="ch16app"/><a contenteditable="false" data-primary="application-level inference optimizations" data-type="indexterm" id="ch16app2"/>还有一些更高层技术可以显著改善 LLM 服务的性能和用户体验。这些方法作用于应用层或推理服务层，用于改进提示词的构造和缓存、对话历史的保留方式、请求到不同模型的路由方式等。 </p>
+        <p>这些优化不涉及修改模型权重或部署新硬件，而是应用层的算法和系统改进。它们通常只需较低成本，就可能显著提高效率和易用性。</p>
+        <p>本节讨论其中几种优化，包括提示词压缩、前缀缓存与去重、后备模型路由和流式输出。这些策略通过减小输入规模、避免冗余计算、妥善处理不同请求类型，以及改善最终用户感知延迟来提高性能。</p>
+        <section data-pdf-bookmark="Prompt Compression" data-type="sect2"><div class="sect2" id="ch16_prompt_compression_1757308074607832">
+          <h2>提示词压缩</h2>
+          <p>用户经常向 LLM 发送很长的提示词<a contenteditable="false" data-primary="application-level inference optimizations" data-secondary="prompt compression" data-type="indexterm" id="id3992"/><a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-tertiary="prompt compression" data-type="indexterm" id="id3993"/><a contenteditable="false" data-primary="prompt compression" data-type="indexterm" id="id3994"/><a contenteditable="false" data-primary="prompts extremely long" data-secondary="prompt compression" data-type="indexterm" id="id3995"/><a contenteditable="false" data-primary="input" data-secondary="very long inputs" data-tertiary="prompt compression" data-type="indexterm" id="id3996"/>或对话历史，但生成合适响应并不一定需要全部上下文。提示词压缩是指在不丢失相关信息的情况下，缩短或简化输入提示词的一组技术。 </p>
+          <p>有些系统提示词或系统注入指令非常冗长（“你是 ChatGPT，一位旨在帮助用户的友好助手……”）。大型系统提示词会在每个请求的输入上下文中占据大量空间。 </p>
+          <p>提示词压缩会减少模型需要完成的工作量。输入更短意味着 GPU <span class="keep-together">计算</span>更少，因此可直接节省成本。 </p>
+          <div data-type="tip">
+            <p>请记住，基于 Transformer 的 LLM 中，稠密全注意力的理论计算复杂度为 O(n²)，其中 <em>n</em> 是以 token 数衡量的输入长度；实际运行时间还取决于内核、硬件和内存行为。 </p>
+          </div>
+          <p>一种简单的提示词压缩方式是删除冗余或无关文本。假设用户提示词中包含大段与回答问题无关的文本，例如复制粘贴了一篇文章，但问题只涉及其中一段。此时，上游组件可以先总结或提取相关部分，再送入 LLM。 </p>
+          <p>另一种提示词压缩方式是对话摘要或截断。例如，在很长的聊天历史中，早期对话可能已经不再相关。系统可以把较早内容总结为精简形式，智能裁剪对话。 </p>
+          <div data-type="tip">
+            <p>许多生产聊天机器人会自动进行提示词压缩，以保持在上下文长度上限以内，并加快整体处理。对于长期对话，这是一项重要能力。 </p>
+          </div>
+          <p>为此，可以运行一个小型 LLM 或传统规则系统，把最早的对话内容总结成简短摘要。常见策略示例是：当对话超过最大上下文长度的 75% 时，总结最早的 25% 消息。然后把摘要放在较新对话内容之前，作为后续的新提示词。具体阈值应根据任务和质量评测调整。</p>
+          <p>实现提示词压缩时，必须确保关键事实没有丢失。一种方法是让模型压缩提示词（例如生成摘要），再通过针对压缩内容提问来验证。这样，算法就能检查压缩后的提示词是否保留了关键信息。</p>
+          <p>这可以避免超长聊天产生过高延迟，并让模型聚焦于最近的对话。截断早期轮次会减小有效提示词长度 <em>N</em>，使稠密因果预填充自注意力工作量从 N(N + 1) ÷ 2（约为 O(N<sup>2</sup>)）降至较短窗口对应的更小三角形成本。虽然成本仍随窗口大小近似二次增长，但更小的 <em>N</em> 会显著影响超长对话。</p>
+          <p>良好摘要可以过滤无关细节、改善响应；糟糕摘要却可能遗漏用户真正关心的重要输入。只有在系统对摘要质量有信心，或对话明显偏题时，摘要才更合适。</p>
+        </div></section>
+        <section data-pdf-bookmark="Prompt Cleansing" data-type="sect2"><div class="sect2" id="ch16_prompt_cleansing_1757308074607876">
+          <h2>提示词清洗</h2>
+          <p>另一种技术是提示词清洗<a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-tertiary="prompt cleansing" data-type="indexterm" id="id3997"/><a contenteditable="false" data-primary="application-level inference optimizations" data-secondary="prompt cleansing" data-type="indexterm" id="id3998"/><a contenteditable="false" data-primary="prompt cleansing" data-type="indexterm" id="id3999"/>，用于改善输入格式和分词，减少发送给模型的不必要空白或标记。分词器会处理空格和换行等字符，但字符与 token 并非一一对应；关键是减少不影响语义的 token。 </p>
+          <p>OpenAI 的 <a href="https://oreil.ly/4NdWc">tiktoken</a> 等分词器对空白的处理较高效，但包含大量 Markdown 和 HTML 的大型提示词仍可能增加 token 数。删除无用 HTML 标签、把花式引号转换为普通文本等简单<span class="keep-together">预处理</span>，可以避免异常分词并减少 token 数；但不得删除承载结构或安全语义的标记。</p>
+          <p>例如，不发送不影响输入含义的空行和重复标点，可能减少推理引擎的计算量。每次或许只能节省少量 token，但在数千个请求中会不断累积，长输入提示词尤其如此。</p>
+          <p>在某些情况下，可以用引用代替完整内容来压缩提示词。例如，如果用户提示词包含系统以前见过的一大段文本，也许是在引用之前存储的文档，就可以在应用层用“file0”之类的引用表示。 </p>
+          <p>随后可以微调模型以解析该引用并获取实际内容，或由检索系统处理。这已经进入检索增强生成（RAG）领域，本书不再展开；重点是，如果有可靠替代方法，就不必始终把原始内容全部送入模型。</p>
+          <div data-type="tip">
+            <p>一些推理引擎支持每个会话只设置一次系统提示词，而不必每次发送。与为每个请求重新压缩系统提示词相比，这通常是更好的方案。 </p>
+          </div>
+          <p>下一节将讨论如何通过前缀缓存提高大型系统提示词的效率。现在先使用提示词压缩创建更短、功能等价的指令集。例如，可以训练模型使用特殊 token 或元数据表示很长的系统提示词，从而无须每次处理冗长的自然语言版本。</p>
+          <p>假设一个包含 200 个 token、充满文本规则的系统提示词，可以替换成 10 个特殊 token，由它们触发原来以 200 个自然语言 token 表达的相同规则。这要求模型经过训练，能够解析元数据、推导规则并遵循规则。</p>
+          <p>“配置”token 仍是一个研究方向：某个配置 token 指示模型使用特定的预配置指令集。可以把它理解为给定提示词前缀（例如系统提示词）的唯一 ID。例如，可以微调模型，让它识别 <code>&lt;POLICY_A&gt;</code> 之类的 token，用来代替一份长达 500 个单词的策略。 </p>
+          <div data-type="tip">
+            <p><a href="https://oreil.ly/s7Ebu">Hugging Face Transformers 库</a>实现了著名的 <a href="https://oreil.ly/QNBuk">CTRL</a> 方法，可作为研究控制码/特殊 token 的起点；它并不等同于任意服务系统中的通用提示词压缩机制。<a contenteditable="false" data-primary="prompt cleansing" data-secondary="CTRL approach" data-type="indexterm" id="id4000"/><a contenteditable="false" data-primary="CTRL approach to prompt trimming" data-type="indexterm" id="id4001"/><a contenteditable="false" data-primary="Hugging Face Transformers library" data-secondary="CTRL" data-type="indexterm" id="id4002"/></p>
+          </div>
+          <p>使用特殊 token 和元数据替代长系统提示词，更多属于训练设计。如果它确实缩短提示词并降低预填充开销，就可能提高推理速度。大规模服务中，这会减少每个查询所需计算并节省成本；实际收益取决于缩短比例和模型是否正确学习了等价语义。</p>
+        </div></section>
+        <section data-pdf-bookmark="Prefix Caching" data-type="sect2"><div class="sect2" id="ch16_prefix_caching_1757308074607924">
+          <h2>前缀缓存</h2>
+          <p>面向 LLM 的多个请求经常在输入中共享相同<em>前缀</em><a contenteditable="false" data-primary="application-level inference optimizations" data-secondary="prefix caching" data-type="indexterm" id="ch16pre"/><a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-tertiary="prefix caching" data-type="indexterm" id="ch16pre2"/><a contenteditable="false" data-primary="prefix caching" data-type="indexterm" id="ch16pre3"/><a contenteditable="false" data-primary="caching mechanisms" data-secondary="prefix caching" data-type="indexterm" id="ch16pre4"/>，例如许多查询可能都以同一个系统提示词开头。无需每次为相同前缀重新计算模型状态，而是可以计算一次，并在后续请求中复用相同 KV 缓存。 </p>
+          <p class="fix_tracking">这项技术称为<em>前缀缓存</em>，有时也称前缀记忆化。使用前缀缓存时，系统会存储 Transformer 的状态，包括注意力层中的键和值；再次出现相同前缀的请求时，就复用这些状态。</p>
+          <div data-type="tip">
+            <p>前缀缓存通过复用已缓存的前缀计算，可以显著减少重复预填充工作。共享前缀只计算一次，随后每个请求只需承担自身未缓存后缀的计算成本。</p>
+          </div>
+          <p>vLLM 实现了前缀缓存<a contenteditable="false" data-primary="vLLM" data-secondary="prefix caching" data-type="indexterm" id="id4003"/>（<code>enable_prefix_caching=True</code>）以避免重复计算。它先判断到达提示词的前 <em>N</em> 个 token 是否与先前请求或同一会话早些时候写入缓存的前缀匹配。如果匹配，vLLM 就复用缓存的 KV 块，避免为这 <em>N</em> 个 token 重新执行昂贵的注意力计算。应确保已启用前缀缓存，并分配足够内存。</p>
+          <p>vLLM 等推理引擎可以自动把到达的查询组成微批次，并使用连续批处理等方法提高 GPU 利用率、在多个请求之间分摊开销并控制延迟。如果没有直接使用此类引擎，也应在自己的技术栈中寻找利用共享前缀的方法。</p>
+          <p>前缀缓存可以加速具有重复前缀的工作负载。假设要针对一份长文档提出 10 个独立问题。每个提示词都包含该文档，后面跟一个问题，例如“[长文档文本] 问题 1：……”“[长文档文本] 问题 2：……”等。</p>
+          <p>10 个提示词中的文档文本完全相同。通常，模型需要为每个问题重新处理整份文档的 KV 条目，因而把长文档编码 10 次。使用前缀缓存后，只需编码一次；后续每个问题只承担较短问题后缀的计算成本。</p>
+          <p>具体而言，使用前缀缓存时，第一个查询会计算文档部分的 Transformer 状态；后续查询中的文档内容与 KV 缓存中的前缀匹配，因此模型可以直接处理“问题 1：……”“问题 2：……”等部分。</p>
+          <p>如果共享前缀远长于各自后缀、缓存全部命中且缓存访问开销较低，前缀缓存的预填充工作量收益可以接近请求数量的线性比例。例如，同一文档上的 10 个独立问题不再分别计算 10 次长文档前缀；但端到端速度通常不会严格达到 10 倍，因为仍需计算各问题后缀、解码输出并承担调度和缓存开销。</p>
+          <p>前缀缓存的另一个应用是聊天会话，因为在“多轮”会话中，对话历史是每个新轮次的共同前缀。最终用户发送新消息时，早先消息构成一个不断增长的前缀。 </p>
+          <p>经过优化的推理系统会保留上一轮的 KV 缓存，只为新用户消息计算 KV。<a contenteditable="false" data-primary="OpenAI" data-secondary="ChatGPT stateful conversation" data-type="indexterm" id="id4004"/><a contenteditable="false" data-primary="ChatGPT (OpenAI) stateful conversation" data-type="indexterm" id="id4005"/>具体产品是否跨轮复用 KV、复用多久以及采用何种缓存机制属于实现细节，不能仅由界面上的会话状态推断。</p>
+          <div data-type="tip">
+            <p>前缀缓存的收益在交互式场景中最明显，尤其是用户在同一上下文/会话中很快追问时。如果缓存仍有效，第二次回答的 TTFT 可能更短，因为前缀（对话历史）已经缓存。 </p>
+          </div>
+          <p class="fix_tracking">部分 API 支持有状态会话；服务端可能在许多优化中采用某种前缀<span class="keep-together">缓存</span>，但会话状态与底层 KV 缓存并不等价。对于无状态 API 调用，如果客户端传递完整对话历史，服务端仍可能识别并复用匹配的 token 前缀，然后只为新的用户消息继续计算；是否命中取决于服务实现、模型、提示词字节/token 一致性和缓存保留策略。 </p>
+          <p>自行实现时，可以对 token 化后的对话历史以及影响 KV 语义的模型/适配器配置生成哈希，得到一致的缓存查找键。不过，必须谨慎管理内存，因为为大量对话存储完整 KV 缓存会迅速消耗 GPU 内存。分页机制可以把不活跃缓存换出到 CPU 内存或磁盘，并在缓存命中时换回 GPU 内存。</p>
+          <p>还可以对多个请求中的部分提示词去重，某些实现也可能识别单个请求中的复用机会。这里的去重是指合并相同且位置、模型配置等语义兼容的子提示词，使其 Transformer 状态只计算一次。例如，如果两个用户几乎同时发送完全相同的提示词前缀，系统可以共用该前缀的预填充结果。</p>
+          <p>单个请求包含重复序列时也可能存在复用机会，但标准因果 Transformer 中，相同 token 子串处于不同位置时的状态通常受位置编码和之前上下文影响，不能仅因文本相同就直接共享 KV。在推理输入中出现很长的重复序列并不常见。</p>
+          <div data-type="tip">
+            <p>如果工作负载包含许多相同前缀的重复查询，应为缓存分配更多内存以提高命中率。反之，如果前缀很少复用，就应使用更小的缓存，甚至完全禁用前缀缓存。务必测量生产环境中的前缀命中率，并据此调优。 </p>
+          </div>
+          <p>前缀缓存可以实现为 token 序列 <em>trie</em>（发音同“try”）。trie 常称为<em>前缀树</em>，是一种树形数据结构：每条边表示一个 token，每个节点编码从根到该节点的 token 序列。实际系统也常使用块哈希或压缩基数树等实现。</p>
+          <p>在 token 序列 trie 中，每个已观察到的提示词前缀都存储为一条 token 路径，从而支持快速查找共享前缀。新请求到达时，推理引擎从根开始逐 token 遍历，直到下一个 token 无法匹配。匹配 token 序列最终到达完成最长已缓存前缀的节点。<a data-type="xref" href="#ch16_figure_8_1757308074576566">图 16-8</a>以系统提示词“You are ChatGPT, a friendly assistant designed to help users…”为例展示这一过程。</p>
+          <figure><div class="figure" id="ch16_figure_8_1757308074576566">
+            <img alt="展示使用字典树数据结构为系统提示词构建前缀缓存的示意图，其中包含“你是 ChatGPT，一个旨在帮助用户的友好助手。”这一 token 序列。" src="assets/aisp_1608.png"/>
+            <h6><span class="label">图 16-8　</span>以 trie 数据结构实现的前缀缓存</h6>
+          </div></figure>
+          <p>此时，系统复用共享 KV 缓存数据（例如增加块引用或复制指针），并只为序列中剩余的提示词 token 继续预填充，之后再解码。这样就避免为已缓存前缀重复计算自注意力；缓存的是可供后续 token 使用的 K/V 状态，而非通常意义上完整保存所有注意力分数。</p>
+          <p>SGLang 的 RadixAttention 使用<a contenteditable="false" data-primary="SGLang" data-secondary="RadixAttention" data-tertiary="prefix caching" data-type="indexterm" id="ch16ra"/><a contenteditable="false" data-primary="RadixAttention (SGLang)" data-secondary="prefix caching" data-type="indexterm" id="id4006"/><a contenteditable="false" data-primary="prefix caching" data-secondary="SGLang RadixAttention" data-type="indexterm" id="ch16ra2"/>覆盖完整 token 序列的压缩 trie，即基数树。这种前缀缓存会把 token 序列压缩为树中的单条边，以节省空间。树节点关联相应 KV 缓存块；具体物理布局由实现的分页分配器决定，不应假定每个节点必然对应单个连续 GPU 页。</p>
+          <p>RadixTree 数据结构节省空间，并支持快速前缀搜索、高效插入和 LRU 风格淘汰。下面的伪代码展示 token 生成期间如何使用基数树查找 KV 缓存：</p>
+
+          <pre class="c_less_space" data-code-language="python" data-type="programlisting"><code class="c1"># Simplified RadixAttention KV cache example</code>
+<code class="c1"># radix_attention_example.py</code>
+
+<code class="n">radix</code><code class="p">:</code> <code class="n">RadixTree</code> <code class="o">=</code> <code class="n">RadixTree</code><code class="p">()</code>  <code class="c1"># holds edge labels + node.cache pointers</code>
+
+<code class="k">def</code> <code class="nf">generate_with_radix</code><code class="p">(</code><code class="n">prompt_tokens</code><code class="p">:</code> <code class="n">List</code><code class="p">[</code><code class="nb">int</code><code class="p">]):</code>
+    <code class="c1"># 1) Find longest cached prefix</code>
+    <code class="n">node</code><code class="p">,</code> <code class="n">prefix_len</code> <code class="o">=</code> <code class="n">radix</code><code class="o">.</code><code class="n">longest_prefix</code><code class="p">(</code><code class="n">prompt_tokens</code><code class="p">)</code>
+    <code class="c1"># shallow-clone the KV cache for that prefix</code>
+    <code class="n">model_state</code> <code class="o">=</code> <code class="n">ModelState</code><code class="o">.</code><code class="n">from_cache</code><code class="p">(</code><code class="n">node</code><code class="o">.</code><code class="n">cache</code><code class="p">)</code>  <code class="c1"># refcount bump</code>
+
+    <code class="c1"># 2) Process remaining prompt suffix</code>
+    <code class="k">for</code> <code class="n">token</code> <code class="ow">in</code> <code class="n">prompt_tokens</code><code class="p">[</code><code class="n">prefix_len</code><code class="p">:]:</code>
+        <code class="n">model_state</code> <code class="o">=</code> <code class="n">model</code><code class="o">.</code><code class="n">forward</code><code class="p">(</code><code class="n">token</code><code class="p">,</code> <code class="n">state</code><code class="o">=</code><code class="n">model_state</code><code class="p">)</code>
+
+    <code class="c1"># 3) As we go, insert or split edges in the radix tree</code>
+        <code class="n">matched</code> <code class="o">=</code> <code class="n">prompt_tokens</code><code class="p">[:</code><code class="n">prefix_len</code> <code class="o">+</code> <code class="mi">1</code><code class="p">]</code>
+        <code class="c1"># insert returns the node for this full prefix</code>
+        <code class="n">node</code> <code class="o">=</code> <code class="n">radix</code><code class="o">.</code><code class="n">insert</code><code class="p">(</code><code class="n">matched</code><code class="p">,</code> <code class="n">cache</code><code class="o">=</code><code class="n">model_state</code><code class="o">.</code><code class="n">kv_cache</code><code class="p">)</code>
+
+        <code class="n">prefix_len</code> <code class="o">+=</code> <code class="mi">1</code>
+
+    <code class="c1"># 4) Now generate new tokens autoregressively</code>
+    <code class="n">output_tokens</code> <code class="o">=</code> <code class="p">[]</code>
+    <code class="k">while</code> <code class="ow">not</code> <code class="n">model_state</code><code class="o">.</code><code class="n">is_finished</code><code class="p">():</code>
+        <code class="n">token</code><code class="p">,</code> <code class="n">model_state</code> <code class="o">=</code> <code class="n">model</code><code class="o">.</code><code class="n">generate_next</code><code class="p">(</code><code class="n">model_state</code><code class="p">)</code>
+        <code class="n">output_tokens</code><code class="o">.</code><code class="n">append</code><code class="p">(</code><code class="n">token</code><code class="p">)</code>
+
+        <code class="c1"># cache each generated prefix as well</code>
+        <code class="n">matched</code> <code class="o">=</code> <code class="n">prompt_tokens</code> <code class="o">+</code> <code class="n">output_tokens</code>
+        <code class="n">node</code> <code class="o">=</code> <code class="n">radix</code><code class="o">.</code><code class="n">insert</code><code class="p">(</code><code class="n">matched</code><code class="p">,</code> <code class="n">cache</code><code class="o">=</code><code class="n">model_state</code><code class="o">.</code><code class="n">kv_cache</code><code class="p">)</code>
+
+    <code class="k">return</code> <code class="n">output_tokens</code></pre>
+          <p>生成开始时，引擎调用 <code>radix.longest_prefix(prompt_tokens)</code>，沿基数树中的多 token 边向下遍历，直到到达与提示词最长缓存前缀匹配的最深节点。然后使用 <code>ModelState.from_cache(node.cache)</code> 轻量复用该节点的 KV 缓存引用，以初始化 <code>model_state</code>，无须为已缓存前缀重新计算自注意力。 </p>
+          <p>接下来，它只逐 token 处理提示词中尚未见过的后缀，并即时更新基数树。对每个新 token，它调用 <code>radix.insert(...)</code>，按需拆分已有边或创建新边，再把中间 <code>model_state.kv_cache</code> 与新节点关联。 </p>
+          <p class="fix_tracking2">处理完整个提示词后，循环切换到自回归解码阶段，使用 <code>model.generate_next(model_state)</code> 生成新 token。类似地，它会把每个生成后的前缀插入基数树。这种方法在支持增量缓存更新的同时，减少冗余计算、节省 KV 缓存索引空间并快速查找前缀。此处代码是概念性伪代码，不代表 SGLang 的实际 API 或准确物理布局。</p>
+          <p>SGLang 的 KV 缓存设计能够捕获多轮聊天、少样本示例和分支逻辑等常见复用模式，并尝试以适合 GPU 访问的块组织共享前缀。实际内存访问是否完全合并，仍取决于块布局、调度和内核实现。</p>
+          <p>决定何时使缓存失效始终是一项挑战。如果其他用途需要缓存内存，就可能必须淘汰部分前缀。缓存系统支持不同策略，例如“最近最少使用”（LRU），优先淘汰最久未使用的前缀。例如，GPU 内存紧张时，SGLang RadixAttention 会惰性淘汰最近最少使用且当前未被引用的基数树叶节点，如<a data-type="xref" href="#ch16_figure_9_1757308074576581">图 16-9</a>所示。</p> 
+          
+          <p>这里展示了 SGLang 面向多个到达请求所用的前缀缓存树结构和 LRU 淘汰策略。该示例改编自 LMSys 的一篇 SGLang <a href="https://oreil.ly/7LBoC">博客文章</a>。<a contenteditable="false" data-primary="" data-startref="ch16ra" data-type="indexterm" id="id4007"/><a contenteditable="false" data-primary="" data-startref="ch16ra2" data-type="indexterm" id="id4008"/></p>
+         
+          <p>图中包含两个聊天会话以及这些会话中的多个查询。每个标签都是一段 token 序列（例如子串）。绿色节点表示树中的新节点，蓝色节点表示当前正在访问的缓存节点，红色节点表示已淘汰节点。各步骤如下：</p>
+          <ol>
+            <li>
+              <p>初始基数树为空。 </p>
+            </li>
+            <li>
+              <p>服务器处理到达的提示词“Hello!”，并返回 LLM 生成的“Hi!”。在这个简单响应中，多个 token 被作为一条压缩边加入树，并连接到一个新的绿色节点。具体来说，系统提示词“You are a helpful assistant”、用户消息“Hello!”和 LLM 响应“Hi!”被串接成相应序列。</p>
+            </li>
+            <li>
+              <p>服务器收到新提示词，这是多轮对话的下一轮。服务器成功在树中找到提示词前缀并复用其 KV 缓存数据，再把新一轮作为新的绿色节点加入树中。 </p>
+            </li>
+            <li>
+              <p>新的聊天会话开始，步骤 3 中的节点 <em>b</em> 被拆分成两个独立节点，使两个聊天会话可以共享系统提示词。 </p>
+            </li>
+            <li>
+              <p>步骤 4 中的第二个聊天会话继续进行。不过，由于内存有限，步骤 4 的节点 <em>c</em> 必须被淘汰，图中以红色表示；新一轮被追加到步骤 4 的节点 <em>d</em> 之后。</p>
+            </li>
+            <li>
+              <p>服务器收到一个新的提示词（查询）。处理后，服务器将其插入树中。因为该新提示词与现有提示词/节点不共享前缀，所以需要从根处分出新的分支。 </p>
+            </li>
+            <li>
+              <p>服务器收到包含更多提示词（查询）的批次。这些提示词与步骤 6 的提示词共享前缀，因此系统拆分步骤 6 的节点 <em>e</em> 并共享该前缀。</p>
+            </li>
+            <li>
+              <p>服务器收到步骤 3 对话（第一个聊天会话）的新消息。此时，它淘汰步骤 5 第二个聊天会话中的节点（例如 <em>g</em> 和 <em>h</em>），因为它们在当时是最近最少使用且可淘汰的节点。 </p>
+            </li>
+            <li>
+              <p>服务器收到一条消息，请求为步骤 8 的节点 <em>j</em> 中的查询生成更多答案。由于内存限制，系统必须淘汰步骤 8 的节点 <em>i</em>、<em>k</em> 和 <em>l</em>。</p>
+            </li>
+          </ol>
+          
+           <figure><div class="figure" id="ch16_figure_9_1757308074576581">
+            <img alt="展示前缀缓存树结构演进的示意图，节点代表聊天会话和查询；绿色节点为新增，蓝色节点为已访问，红色节点按最近最少使用策略被驱逐。" src="assets/aisp_1609.png"/>
+            <h6><span class="label">图 16-9　</span>SGLang RadixAttention 前缀缓存树对多个到达请求采用 LRU 淘汰（改编自 <a href="https://oreil.ly/7LBoC">LMSys 的 SGLang 博客文章</a>）</h6>
+          </div></figure>
+          <p class="pagebreak-before">该示例展示了多个请求如何共享前缀，也说明了 LRU 缓存淘汰策略在前缀缓存中的工作方式。下面转向级联模型部署模式，以更好地利用 GPU 资源。<a contenteditable="false" data-primary="" data-startref="ch16pre" data-type="indexterm" id="id4009"/><a contenteditable="false" data-primary="" data-startref="ch16pre2" data-type="indexterm" id="id4010"/><a contenteditable="false" data-primary="" data-startref="ch16pre3" data-type="indexterm" id="id4011"/><a contenteditable="false" data-primary="" data-startref="ch16pre4" data-type="indexterm" id="id4012"/></p>
+        </div></section>
+        <section data-pdf-bookmark="Model Cascading and Tiered Model Deployment" data-type="sect2"><div class="sect2" id="ch16_model_cascading_and_tiered_model_deployment_1757308074607973">
+          <h2>模型级联与分层模型部署</h2>
+          <p>并非所有查询都需要最大型先进模型的能力<a contenteditable="false" data-primary="application-level inference optimizations" data-secondary="model cascading and tiered deployment" data-type="indexterm" id="ch16mctmd"/><a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-tertiary="model cascading and tiered deployment" data-type="indexterm" id="ch16mctmd2"/><a contenteditable="false" data-primary="model cascading" data-type="indexterm" id="ch16mod"/>（以及成本）。有些用户请求足够简单，可以由规模小得多、速度更快且成本更低的模型回答。选择合适模型的做法称为<em>模型级联</em>或<em>后备模型路由</em>。 </p>
+          <p>可以通过分层模型部署实现模型级联，即维护多个规模和能力不同的模型。对每个到达请求，根据查询复杂度、所需质量或当前系统负载动态选择模型。</p>
+          <p>假设一个问答（QA）推理部署同时包含 7000 亿参数的大型先进模型和 700 亿参数的小型模型。后者需要的 GPU 资源更少，因而托管更快、成本更低。如果用户提出非常直接的事实性问题（由分类器或启发式规则判断），700 亿参数模型可能足以处理。 </p>
+          <p>对于直接的问题，可以把查询路由到较小模型。在本节的假设性示例中，小模型用 50 ms 响应，而 7000 亿参数模型需要 500 ms。如果小模型答案因置信度低而被判定为不合格，系统就把问题路由到较大模型。需要注意，生成式答案的 logits 并不会自动构成校准良好的答案正确性置信度，通常还需专门的验证器、分类器或校准方法。</p>
+          <p>这种两阶段方法可以降低总体平均延迟和计算用量；不过，如果请求因小模型初次响应置信度不足而先后路由到两个模型，其延迟可能更长。商业 AI 服务的内部路由策略通常未完全公开，不能把对具体产品的推测视为事实。</p>
+          <p>例如，把 60% 的查询路由到参数规模小 10 倍的模型，可能显著降低推理计算成本；原文所称最高约 5 倍总体成本降低只是条件性示例。真实收益取决于两种模型的硬件效率、输出长度、回退率、质量目标以及路由器本身的开销。</p>
+          <div data-type="tip">
+            <p>维护多个模型和路由系统会带来工程开销，因为不仅要监控一个模型，还要监控其他模型、模型之间的相互作用以及路由系统。只有在流量规模和成本结构值得这样做时，才应采用该方案。 </p>
+          </div>
+          <p>实现模型级联需要查询分类器或启发式机制辅助模型路由决策。要正确解决这个问题相当困难，因为机制往往需要持续适应、全面的启发式规则和不断调优路由器。因此，许多组织仍依赖启发式或基于规则的路由器，并通过离线分析更新决策标准。</p>
+          <p>一种方法是把它看作类似前文推测解码的推测问题。可以先让较小模型以草稿模式生成答案，并由校准后的评分器或验证器给出置信评分。评分足够高时直接返回响应，否则调用较大模型。</p>
+          <p>如果最终需要大模型，应确保小模型增加的延迟不会让用户等待过久。实践中，如果怀疑问题很难，可以并行运行小模型和大模型，使两者延迟重叠。这看似浪费且违反直觉，但对于某些延迟敏感场景可能有益，代价是额外计算。</p>
+          <p>另一种方法是预先为已知类型的用户查询训练独立分类器。例如，可以对复杂度分类，判断“这个问题是否需要大模型的广泛知识或推理能力？”如果不需要，就使用小模型。 </p>
+          <p>需要注意，随着用户查询随时间演化，该分类器本身需要定期重新训练。它还引入了另一个可能退化和失败的组件，因此必须受到监控。应确保分类器轻量、快速且稳健，否则它会成为推理系统的新瓶颈。</p>
+          <p>初期通常使用简单启发式规则。例如，若用户查询简短且偏事实性，如“今天天气怎样？”或“谁是 X 国总统？”，可以尝试使用较小模型。对于较长提示词（例如超过 50 个 token）或包含<em>解释</em>、<em>分析</em>、<em>详述</em>等词的创意查询，则可以直接发送给大型 LLM，绕过小模型。不过，长度和关键词只是脆弱的示例特征，必须用真实流量评估误路由和质量风险。</p>
+          <p>应记录并标记每个请求由哪个模型处理（例如“小”或“大”），以及是否发生回退。这样就能按模型细分延迟、质量指标和回退次数。 </p>
+          <p>这些标记数据还能用于监控调度器的决策。统计小模型答案被拒绝的次数，可以识别相关模式，进而重新训练小模型或改进路由器的<span class="keep-together">启发式规则</span>。 </p>
+          <p>反之，如果小模型能很好地处理许多查询，可以据此调整路由阈值，使更多合适请求使用小模型，从而降低响应延迟。阈值方向取决于评分定义：若分数越高表示越可信，提高接受门槛通常会减少而不是增加小模型使用率。</p>
+          <p>也可以根据容量路由。如果大模型集群达到最大负载，与其让请求排队并增加延迟，不如临时把低关键性请求路由到较小模型。小模型质量可能较低，但仍能快速给出响应。这是高负载下的一种优雅降级。用户可能察觉质量下降，因此应明确满足产品承诺和透明度要求。</p>
+          <p>在资源受限时，可以按服务等级设计容量优先级；但是否允许把用户路由到不同模型、是否需要披露，应遵守产品契约、隐私和合规要求，不能把未经证实的商业服务行为当作事实或默认最佳实践。</p>
+          <div data-type="tip">
+            <p>第 <a data-type="xref" data-xrefstyle="select:labelnumber" href="ch17.html#ch17_scaling_disaggregated_prefill_and_decode_for_infer_1757308075339224">17</a>～<a data-type="xref" data-xrefstyle="select:labelnumber" href="ch19.html#ch19_dynamic_and_adaptive_inference_engine_optimization_1757308078896371">19</a> 章将介绍更高级的动态和自适应推理服务器能力。这些功能高度依赖当前系统负载，包括可用 GPU 内存、内存带宽利用率、KV 缓存利用率等。 </p>
+          </div>
+          <p>另一种模型级联依据内容本身。例如，当请求触发安全策略时，一些系统会把它交给专用安全分类器、策略模型或受控检索系统，以生成符合策略的处理结果。后备组件不应被描述为“专门回答不安全提示词”的模型，因为它仍需执行相同或更严格的安全策略。</p>
+          <p>这更偏向内容策略而非性能，但仍是模型路由逻辑的重要考量。专用安全组件可能更小、更快，从而减少主模型负担；不过，首要目标应是策略正确性与安全性，而不是性能收益。<a contenteditable="false" data-primary="" data-startref="ch16mod" data-type="indexterm" id="id4013"/></p>
+          <p>从部署角度看，<a contenteditable="false" data-primary="deployment" data-secondary="tiered deployment" data-type="indexterm" id="id4014"/>多模型配置需要谨慎扩缩容，因为每个模型都需要足够实例处理分配给自己的流量。例如，大量简单查询到达时，小型 LLM 可能饱和，而大型模型却处于空闲，导致前者成为瓶颈。 </p>
+          <p>可以自动扩缩容，在一天中的特定时段增减小模型实例，甚至使用容器编排按需在大模型池和小模型池之间动态重新分配 GPU；但重新加载模型和预热会产生切换成本。<a contenteditable="false" data-primary="" data-startref="ch16mctmd" data-type="indexterm" id="id4015"/><a contenteditable="false" data-primary="" data-startref="ch16mctmd2" data-type="indexterm" id="id4016"/></p>
+        </div></section>
+        <section data-pdf-bookmark="Streaming Responses" data-type="sect2"><div class="sect2" id="ch16_streaming_responses_1757308074608019">
+          <h2>流式响应</h2>
+          <p>为了改善推理系统的“感知”性能<a contenteditable="false" data-primary="application-level inference optimizations" data-secondary="streaming responses" data-type="indexterm" id="ch16str"/><a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-tertiary="streaming responses" data-type="indexterm" id="ch16str2"/><a contenteditable="false" data-primary="output" data-secondary="streaming responses" data-type="indexterm" id="ch16str3"/><a contenteditable="false" data-primary="streaming responses" data-type="indexterm" id="ch16str4"/>，应在生成输出 token 时流式传输，而不是强迫最终用户等到完整生成结束后才能看到响应。这样，用户可以在信息到达时立即开始阅读和处理。即使总耗时相同，交互感觉也会快得多。</p>
+          <p>英文阅读速度常以每分钟约 200～300 个单词作为经验范围，但换算为 token/s 会随语言、分词器和文本类型变化，不能固定为 4～13 token/s。流式速率至少应避免明显落后于目标用户的消费速度；在作出<span class="keep-together">性能</span>优化和容量规划决策时，应以实际语言和客户端体验指标为准。</p>
+          <div data-type="tip">
+            <p>应将系统 token 吞吐量与目标用户的实际阅读/消费速度对照监控。例如，如果模型延迟使系统只能以 2 token/s 输出，交互体验往往会明显受影响，说明还需进一步优化。 </p>
+          </div>
+          <p>vLLM、SGLang 和 NVIDIA Dynamo 等现代推理引擎通常支持流式传输。启用后，服务器通过 WebSocket、服务器发送事件（SSE）、HTTP 流式响应等方式把生成增量刷新给客户端。刷新策略应依据 TTFT、token 间延迟、网络开销和用户消费速度，而不是机械追求固定 token/s。</p>
+          <p>标准自回归模型在逻辑上逐 token 生成；EAGLE、Medusa 等推测或多 token 解码技术则可能一次接受多个 token。传输层可以把增量组成小批次后刷新给用户，但并不强制必须使用 2～5 token；合适大小取决于延迟目标、协议和网络开销。</p>
+          <p>刷新前不能在批次中累积过多 token，否则会失去流式传输的意义；另一方面，每个 token 单独形成网络包也可能因开销而低效。框架可以按时间、缓冲字节数、语义边界或组合条件刷新，而不必只依赖换行或句末 token。</p>
+          <p>例如，假设一个 100 token 的答案需要 5 秒生成，稳定解码速率为 20 token/s，且每 5 个 token 刷新一批；忽略独立 TTFT 和网络开销时，首批 token 约在 0.25 秒后到达（5 token ÷ 20 token/s = 0.25 秒），随后稳定发送各批次直到响应完成。真实首批到达时间还必须加上预填充、排队和网络延迟。</p>
+          <p>没有流式传输时，用户可能面对空白屏幕等待 5 秒，随后一次性看到整个答案，体验并不理想，还可能引发重复点击等挫败行为。</p>
+          <p>从性能角度看，流式传输会发送更多小型增量，而不是一个大消息，因此会增加协议、序列化和系统调用开销。相对于模型计算时间，该开销在很多部署中较小，但在高速小模型或大规模扇出场景中不能默认忽略。HTTP/2 和持久连接可避免反复建连，并帮助降低开销。</p>
+          <div data-type="tip">
+            <p>要留意 Nagle 算法<a contenteditable="false" data-primary="Nagle’s algorithm" data-type="indexterm" id="id4017"/>与延迟确认的交互，在某些 TCP 栈和配置中可能增加数十毫秒，最坏配置下甚至更高。可以评估 <code>TCP_NODELAY</code>，并在系统支持时调整快速确认或延迟确认计时器，以降低增量刷新延迟。代价是小包更多、带宽效率下降；对 HTTP/2、HTTP/3 或代理链路，还需针对实际协议栈测量，而不能仅靠这一 TCP 选项。</p>
+          </div>
+          <p>必须正确管理流控。例如，客户端因网络问题而缓慢消费流时，不应让网络写入直接阻塞全局模型调度。不过，让引擎无条件生成完整响应也可能浪费计算并造成缓冲膨胀；应采用有界缓冲、背压、暂停/取消或公平调度策略。</p>
+          <p>系统应把网络发送与主 token 生成循环解耦，例如使用异步 I/O、独立线程或事件循环。CUDA 流管理 GPU 工作，并不直接负责向最终用户发送网络数据；两者应通过线程安全的有界队列衔接。</p>
+          <p>推理引擎维护有界缓冲区以管理流控，防止客户端停滞或断开时内存无界增长。这些边缘情况在生产环境中相当常见，必须处理。可以从允许累积 50～100 个 token 之类的值开始测试，但限制更适合按字节、时间和租户预算共同定义，因为 token 长度及编码后大小并不固定。</p>
+          <p>超过一定限制后，推理引擎可以暂停生成、取消请求或关闭连接。这样，如果客户端在生成途中断开，或因连接缓慢而无法跟上，引擎就能停止生成 token，把资源释放给其他请求。</p>
+          <p>选择缓冲上限需要权衡内存用量与用户体验。短响应很少出现问题，但超长<span class="keep-together">响应</span>和较慢的消费端<span class="keep-together">连接</span>更容易触发。</p>
+          <p>改善呈现的一种方法是 token 缓冲/节流。如果模型生成 token 的速度快于 UI 希望展示的速度，客户端展示层可以有意平滑输出。例如，模型在 0.5 秒内突发产生 20 个 token 时，一次性显示可能先出现大段文本、随后停顿。</p>
+          <p>应用 UI 可能希望呈现更稳定的打字机效果。此时可以在客户端渲染层引入例如 50 ms 的显示间隔，避免 token 突发造成卡顿感。服务器不应为此拖慢实际生成或资源释放；否则会增加完成时间和缓冲压力。</p>
+          <p>可以把显示节奏配置为适应不同 UI 体验。但若按用户等级限制实际模型生成或网络传输速度，应明确遵守服务契约和公平性要求；单纯延迟展示并不会降低已经完成的 GPU 计算负载。</p>
+          <p>流式响应还允许最终用户在响应完成前评估中间结果并采取行动。例如，如果用户看到答案开头后发现方向不符合预期，可以使用“停止”或“中断”按钮终止生成。 </p>
+          <p>这能节省不必要的计算并改善体验，因为用户无须等到不满意的回答全部生成后才能反馈。应监控或至少测量提前停止事件。 </p>
+          <p>显式停止过多可能表示模型相关性有问题。如果许多用户都在某个位置停止，可能说明模型经常偏题，或超过该长度后过于冗长。这可以提示进一步微调模型使其更简洁，或调整生成并发送给用户的最大 token 数。不过，停止事件也可能源于用户已获得答案、网络切换或 UI 行为，需要结合其他信号分析。</p>
+          <p>提前停止也可能来自频繁改变主意的用户。无论原因如何，最好允许用户中断 token 生成，使推理集群能够回收资源处理其他请求。</p>
+          <p>简而言之，流式传输是响应迅速的 LLM 服务的一项重要能力。它不会提高原始模型吞吐量，反而会增加少量开销，但能改善用户感知速度。实现时应谨慎避免干扰生成：网络发送应通过异步 I/O 或独立线程与推理调度解耦，并用有界队列和取消机制避免不稳定的终端网络连接拖住主要 token 生成循环。</p>
+          <div data-type="tip">
+            <p>建议在测试环境中持续<a contenteditable="false" data-primary="profiling" data-secondary="latency with streaming enabled" data-type="indexterm" id="id4018"/><a contenteditable="false" data-primary="latency" data-secondary="profiling when streaming enabled" data-type="indexterm" id="id4019"/>比较启用与禁用流式传输时的端到端延迟，并分别测量 TTFT、token 间延迟和完成时间。确认 token 发出节奏符合目标，且没有引入锁竞争或 I/O 等待等显著瓶颈。对 Python 友好的 <a href="https://locust.io">Locust</a> 可以模拟客户端，以大规模测试低延迟流式工作负载。<a contenteditable="false" data-primary="" data-startref="ch16str" data-type="indexterm" id="id4020"/><a contenteditable="false" data-primary="" data-startref="ch16str2" data-type="indexterm" id="id4021"/><a contenteditable="false" data-primary="" data-startref="ch16str3" data-type="indexterm" id="id4022"/><a contenteditable="false" data-primary="" data-startref="ch16str4" data-type="indexterm" id="id4023"/> </p>
+          </div>
+        </div></section>
+        <section data-pdf-bookmark="Debouncing and Request Coalescing" data-type="sect2"><div class="sect2" id="ch16_debouncing_and_request_coalescing_1757308074608065">
+          <h2>防抖与请求合并</h2>
+          <p>许多生产系统还会实现称为<em>防抖</em>和<em>请求合并</em>的 UX 功能<a contenteditable="false" data-primary="application-level inference optimizations" data-secondary="debouncing and request coalescing" data-type="indexterm" id="id4024"/><a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-tertiary="debouncing and request coalescing" data-type="indexterm" id="id4025"/><a contenteditable="false" data-primary="debouncing" data-type="indexterm" id="id4026"/><a contenteditable="false" data-primary="request coalescing" data-type="indexterm" id="id4027"/>。系统在执行动作前短暂停顿，通过防抖识别用户是否因误操作或急躁而快速连续发送多个请求，如<a data-type="xref" href="#ch16_figure_10_1757308074576597">图 16-10</a>所示。</p>
+          <figure><div class="figure" id="ch16_figure_10_1757308074576597">
+            <img alt="展示多个用户点击触发防抖的示意图，setTimeout 延迟函数执行以处理快速输入。" src="assets/aisp_1610.png"/>
+            <h6><span class="label">图 16-10　</span>防抖会在执行动作前短暂停顿</h6>
+          </div></figure>
+          <p>此时，系统可以把多个查询合并成一个，或丢弃除最新查询以外的请求。这类应用层防护措施有助于减少后端过量、重复且浪费的负载。</p>
+          <p>例如，如果用户双击“提交”，或在一秒内发送两个非常相似的查询，系统可以丢弃重复请求。用户感到挫败时可能因应用响应过慢而不耐烦地多次重新提交。</p>
+          <p>但防抖和请求合并也会增加延迟，可能进一步加剧用户挫败感，导致更多点击。请求在途时，UI 可以禁用重复提交并显示明确的进行中状态，从界面层阻止双击；服务器端仍应使用幂等键、去重窗口或请求取消提供保护。</p>
+          <div data-type="tip">
+            <p>部分网关、批处理器或应用层组件支持防抖/合并窗口。可以从较短窗口（例如 2～5 ms）开始测试，在批处理效率和额外延迟之间寻找平衡。不能仅凭界面感受断言某个具体商业产品采用了这种防抖设置。 </p>
+          </div>
+        </div></section>
+        <section data-pdf-bookmark="Token Output Limits and Timeouts" data-type="sect2"><div class="sect2" id="ch16_token_output_limits_and_timeouts_1757308074608112">
+          <h2>输出 token 限制与超时</h2>
+          <p>响应 token 数会直接影响解码时间和成本<a contenteditable="false" data-primary="inference" data-secondary="optimizations at the application level" data-tertiary="token output limits and timeouts" data-type="indexterm" id="id4028"/><a contenteditable="false" data-primary="application-level inference optimizations" data-secondary="token output limits and timeouts" data-type="indexterm" id="id4029"/><a contenteditable="false" data-primary="output" data-secondary="token output limits and timeouts" data-type="indexterm" id="id4030"/>，因此可以设置输出长度上限或超时。这类应用层约束能够防止失控生成，即模型持续生成，超过合理 token 数。</p>
+          <p>输出 token 上限和超时有助于保持延迟一致，也能防止恶意或意外提示词造成极长生成、长期占用 GPU 资源。许多公共 API 因此设置严格输出上限；这既是滥用防护，也是性能保护措施。 </p>
+          <p>还应始终设置服务器端超时。例如，可以按产品 SLO 在生成超过一定时间后返回明确标记的部分结果或超时错误。原文的 30 秒只是示例；超时后必须真正取消后端生成并释放资源，不能只关闭客户端响应。</p>
+          <div data-type="tip">
+            <p>还要监控模型是否倾向于<a contenteditable="false" data-primary="monitoring" data-secondary="model rambling" data-type="indexterm" id="id4031"/>冗长离题。适度的 token 上限可能使模型更聚焦并避免超长回答，但 4,096 token 等数值只是示例；过低上限会截断代码、结构化输出或复杂答案，必须按任务评测质量。</p>
+          </div>
+          <p>必须根据用户需求选择上限和超时。这些限制既能使延迟更可预测，也能限制最坏情况下的计算量，从而帮助容量规划。</p>
+          <p>总之，输入优化（例如压缩和清洗）、缓存、智能路由和 UX 优化（例如流式传输）相结合，可以减少工作量、降低集群容量需求和成本，并改善用户满意度。这些应用层策略与前面的小节中的底层优化互为补充，形成改善 LLM 服务性能的整体方法。<a contenteditable="false" data-primary="" data-startref="ch16app" data-type="indexterm" id="id4032"/><a contenteditable="false" data-primary="" data-startref="ch16app2" data-type="indexterm" id="id4033"/></p>
+        </div></section>
+        </div></section>
+   
+
+          <section data-pdf-bookmark="Key Takeaways" data-type="sect1"><div class="sect1" id="ch16_key_takeaways_1757308074608157">
+            <h1>要点回顾</h1>
+            <p>本章介绍的技术表明，高效 LLM 服务是一项整体工程，需要结合现代 GPU 硬件、新型软件优化和全面监控。性能分析工具用于识别瓶颈，系统化调试技术用于解决问题。以下是本章的一些关键要点：</p>
+            <dl>
+              <dt>全面性能分析</dt>
+              <dd>
+                <p>在整个推理技术栈中进行端到端性能分析。工程师使用性能分析器测量各阶段的延迟和资源用量，从而准确定位减速和低效环节。这种数据驱动方法能够指导针对性优化，消除瓶颈。</p>
+              </dd>
+              <dt>监控与可观测性</dt>
+              <dd>
+                <p>为已部署的推理服务实现稳健监控。实时跟踪延迟百分位数、吞吐量、GPU 利用率和内存用量等关键指标，及早发现性能退化或资源饱和。使用日志和追踪观察逐请求处理，在大规模工作负载中识别热点或异常。</p>
+              </dd>
+              <dt>调试与迭代调优</dt>
+              <dd>
+                <p>采用系统化调试工作流，可以更快解决性能和正确性问题；即使跨越大量节点，也应通过分层遥测和抽样逐步定位。当出现意外变化（例如吞吐量下降或延迟升高）时，便可从高层症状逐层深入到底层问题，而不能假定数万节点环境会天然“容易”调试。</p>
+              </dd>
+              <dt>使用指标验证优化</dt>
+              <dd>
+                <p>GPU 调试器、内存泄漏检测器和性能相关单元测试等工具，有助于验证量化和内核融合等优化没有引入静默的性能或正确性错误。每次向生产环境发布新优化时，这种迭代式调优—测试循环对于保持高性能和可靠性至关重要。</p>
+              </dd>
+              <dt>效率与成本优化</dt>
+              <dd>
+                <p>应关注提高推理成本效益的改进。提高有效吞吐量和利用率的优化通常有助于降低单查询成本，但还需计入质量、尾延迟、功耗和工程复杂度。通过分析并改进系统，团队可能使用更少 GPU 服务更多请求，从而节省基础设施和能源成本。</p>
+              </dd>
+            </dl>
+          </div></section>
+          <section data-pdf-bookmark="Conclusion" data-type="sect1"><div class="sect1" id="ch16_conclusion_1757308074608199">
+            <h1>结论</h1>
+            <p>性能分析、调试和全栈系统调优，是维持大规模 LLM 推理高效、可靠且具成本效益的关键。随着部分模型和系统探索万亿级参数，大型生产与研究集群也在持续扩展；原文所称单次部署达到数十万乃至数百万 GPU 并非当前普遍生产现实，应视为远期规模设想。在这种规模下，软件与硬件持续协同设计依然重要。仅靠硬件提高性能已经不够，尤其是在功耗逐渐成为限制因素的情况下。软件与硬件需要在技术栈每一层协同设计并持续共同调优。</p>
+            <p>经过优化的推理基础设施可为最终用户提供快速响应、可预测且稳定的系统行为以及较低运营成本。具备这些条件，才能可靠地交付服务大型先进模型的推理系统。 </p>
+            <p>接下来的章节将深入理解并优化现代 LLM 推理系统中计算、内存和网络最密集的部分：计算（预填充）KV 缓存，在集群中的相关工作进程之间共享缓存，以及使用缓存生成（解码）新 token。</p>
+            
+          </div></section>
+
+    </div></section></body></html>

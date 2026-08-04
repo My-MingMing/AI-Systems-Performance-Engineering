@@ -1,0 +1,1162 @@
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>GPU Architecture, CUDA Programming, and Maximizing Occupancy</title><link href="epub.css" rel="stylesheet" type="text/css"/>
+<meta content="urn:uuid:21766509-092f-46e2-9672-91f3a159d620" name="Adept.expected.resource"/></head><body data-type="book"><section data-pdf-bookmark="Chapter 6. GPU Architecture, CUDA Programming, and Maximizing Occupancy" data-type="chapter" epub:type="chapter"><div class="chapter" id="ch06_gpu_architecture_cuda_programming_and_maximizing_1757308039143015">
+      <h1><span class="label">第 6 章 </span>GPU 架构、CUDA 编程与最大化占用率</h1>
+      <p>本章首先回顾 single instruction, multiple threads（SIMT）执行模型，以及 warp、thread block 和 grid 如何把 GPU 算法映射到 streaming multiprocessor（SM）。</p>
+      <p>随后将深入 CUDA 编程模式，讨论 register file、shared memory/L1、L2 与 HBM3e 等 memory hierarchy，并介绍 GPU 异步数据传输能力，包括 Tensor Memory Accelerator（TMA），以及在受支持 Blackwell Tensor Core 路径中用作 accumulator storage 的 Tensor Memory（TMEM）。具体能力依 GPU 架构和指令/API 而定。</p>
+      <p>本章还将介绍 roofline analysis，用于分析 kernel 的 compute 与 memory traffic 上界。Roofline 是诊断模型而非二元分类器，其目标是帮助识别可实现性能与当前瓶颈，而不是保证达到理论峰值。</p>
+      <section data-pdf-bookmark="Understanding GPU Architecture" data-type="sect1"><div class="sect1" id="ch06_understanding_gpu_architecture_1757308039143238">
+        <h1>理解 GPU 架构</h1>
+        <p>通用 CPU 通常强调低延迟与强单线程性能，<a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-type="indexterm" id="ch6arc"/><a contenteditable="false" data-primary="architecture of GPUs" data-type="indexterm" id="ch6arc2"/><a contenteditable="false" data-primary="parallelism" data-secondary="architecture of GPU" data-type="indexterm" id="id2065"/><a contenteditable="false" data-primary="GPUs" data-secondary="parallelism" data-tertiary="architecture of GPU" data-type="indexterm" id="id2066"/><a contenteditable="false" data-primary="architecture of GPUs" data-secondary="parallelism" data-type="indexterm" id="id2067"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="flow between CPU and GPU" data-type="indexterm" id="id2068"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="flow between CPU and GPU" data-type="indexterm" id="id2069"/><a contenteditable="false" data-primary="CPU DRAM" data-secondary="CUDA programming flow" data-type="indexterm" id="id2070"/>GPU 则以大量并行线程获得高吞吐；这是一种概括，现代 CPU/GPU 都包含多种 latency/throughput 优化机制。图 <a data-type="xref" href="#ch06_figure_1_1757308039123504">6-1</a> 展示了简化的 CPU-GPU CUDA 编程流程。</p>
+        <figure><div class="figure" id="ch06_figure_1_1757308039123504">
+          <img alt="展示 CPU 与 GPU 之间简单 CUDA 编程流程的示意图：加载数据、复制到 GPU、执行内核、复制回结果以及在 CPU 上使用结果。" src="assets/aisp_0601.png"/>
+          <h6><span class="label">图 6-1. </span>简化的 CUDA 编程流程</h6>
+        </div></figure>
+        <p>在图示的传统显式复制流程中，host 先把数据载入 CPU memory，再复制到 GPU memory，随后启动 GPU kernel，并在需要 CPU 消费结果时把数据复制回 host。这只是常见基本路径；unified/managed memory、zero-copy、GDS、peer access、异步 copy 和 device-resident pipeline 可能采用不同的数据移动方式。</p>
+        <p>GPU 主要通过在 warp 之间切换来隐藏 instruction、memory 和部分依赖 latency，而不是用 SM 内并行直接“隐藏”图 <a data-type="xref" href="#ch06_figure_1_1757308039123504">6-1</a> 中整段 CPU-GPU transfer。GPU 包含多个 SM；它们与 CPU core 不能一一类比。<a contenteditable="false" data-primary="warps" data-secondary="GPU architecture" data-type="indexterm" id="ch6wrp"/><a contenteditable="false" data-primary="SMs (streaming multiprocessors)" data-secondary="GPU architecture" data-tertiary="warps" data-type="indexterm" id="ch6wrp2"/><a contenteditable="false" data-primary="architecture of GPUs" data-secondary="streaming multiprocessors" data-tertiary="warps" data-type="indexterm" id="ch6wrp3"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="warps" data-type="indexterm" id="ch6wrp4"/><a contenteditable="false" data-primary="threads" data-secondary="warps" data-type="indexterm" id="ch6wrp5"/>对书中讨论的 Blackwell compute capability，单 SM 的最大 resident warp 数可为 64，每 warp 32 个 thread；具体限制应以目标 device attribute 和 tuning guide 为准。</p>
+        <p>每块 GPU 包含多个 SM，<a contenteditable="false" data-primary="SMs (streaming multiprocessors)" data-secondary="GPU architecture" data-type="indexterm" id="ch6sm"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="streaming multiprocessors" data-type="indexterm" id="id2071"/><a contenteditable="false" data-primary="architecture of GPUs" data-secondary="streaming multiprocessors" data-type="indexterm" id="id2072"/>每个 SM 管理 warp scheduler、execution pipeline、register file、shared memory/L1 等资源。原文给出 Blackwell 每 SM 最多 64 个 resident warp（2,048 thread）、64K 个 32-bit register（256 KiB），以及合计 256 KiB 的 L1/shared-memory SRAM；其中最多约 228 KiB 可配置为 shared memory，单 block 可用动态 shared memory 约 227 KiB。此类上限依具体 architecture、SKU、carveout、static allocation 和 opt-in API 而定，不能把所有 Blackwell 或“现代 GPU”视为完全相同。</p>
+        <p>Blackwell SM 包含多个 warp scheduler/processing block，可从 ready warp 向相应 execution pipeline 发出指令。原文把它概括为四个独立 scheduler 每 cycle 最多各选择一个 warp，并进一步断言每个 scheduler 可从同一 warp dual-issue 一条 arithmetic 与一条 memory instruction。具体 issue width、配对和 pipeline mapping 属于 architecture-dependent 微架构细节，CUDA programming model 不保证所有指令组合或每 cycle 都能如此发射。</p>
+        <p>在有足够 ready warp、无 dependency/structural hazard 且指令组合可发射的理想条件下，多个 scheduler partition 可以并行推进 warp。图 <a data-type="xref" href="#ch06_figure_2_1757308039123540">6-2</a> 是概念示意，不应把“发出指令”直接等同于四个 warp 的全部 thread 在同一 cycle 完成执行。</p>
+        <figure><div class="figure" id="ch06_figure_2_1757308039123540">
+          <img alt="展示 Blackwell 流式多处理器（SM）结构的示意图：具有四个独立 warp 调度器，每个周期可发出一条 warp 指令，并包含 INT32、FP32 和 Tensor Core 单元。" src="assets/aisp_0602.png"/>
+          <h6><span class="label">图 6-2. </span>Blackwell SM warp scheduler partition 与 math/memory dual-issue 的概念示意</h6>
+        </div></figure>
+        <p>图中把 SM 画成四个 scheduling partition，每个包含 warp scheduler 与 dispatch logic，并共享部分 on-chip resource。“四个 mini-SM”只是帮助理解的比喻；实际 register、cache/shared memory、execution unit 和 crossbar 的归属及共享方式依架构而定。</p>
+        <p>所谓 <em>dual-issue</em>，是特定独立指令在满足配对规则时可由相应 dispatch path 同 cycle 发出。原文固定写成同一 warp 的一条 INT32/FP32/Tensor Core arithmetic 加一条 load/store，并不是 CUDA 对所有 Blackwell 指令的通用保证。表 <a data-type="xref" href="#ch06_table_1_1757308039130091">6-1</a> 保留原书的概念数字，但实际行为应由 architecture documentation 与 profiler counter 验证。</p>
+        <table id="ch06_table_1_1757308039130091">
+          <caption><span class="label">表 6-1. </span>SM scheduler 与 instruction issue 的概念性上限（每 clock cycle）</caption>
+          <thead>
+            <tr>
+              <th>指标</th>
+              <th>概念值</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>scheduler 数量</td>
+              <td>4</td>
+            </tr>
+            <tr>
+              <td>最大发射 warp 数</td>
+              <td>4（每 scheduler 1 个）</td>
+            </tr>
+            <tr>
+              <td>最大 math instruction issue 数</td>
+              <td>4（每 scheduler 一个 arithmetic issue）</td>
+            </tr>
+            <tr>
+              <td>最大 memory instruction issue 数</td>
+              <td>4（每 scheduler 一个 load/store issue）</td>
+            </tr>
+          </tbody>
+         
+        </table>
+        <div data-type="note" epub:type="note">
+   <p>注意：所有指标表中的数字均用于说明概念。不同 GPU 架构的实际 benchmark 结果见<a href="https://github.com/cfregly/ai-performance-engineering">本书 GitHub 仓库</a>；微架构上限仍应以 NVIDIA 官方文档与目标设备实测为准。
+        </p>
+</div>
+
+      
+        <p>在原表的理想化模型中，四个 partition 可合计发出四条 math 与四条 memory instruction。但达到 issue 上限不代表同时达到 compute 与 memory 峰值：instruction latency、execution width、operand collector、dependency、cache miss、memory transaction 和 pipeline contention 都会限制吞吐。该模型来自 SM 的多 partition <span class="keep-together">组织方式，</span>只能作为分析起点。<a contenteditable="false" data-primary="" data-startref="ch6sm" data-type="indexterm" id="id2073"/><a contenteditable="false" data-primary="" data-startref="ch6wrp" data-type="indexterm" id="id2074"/><a contenteditable="false" data-primary="" data-startref="ch6wrp2" data-type="indexterm" id="id2075"/><a contenteditable="false" data-primary="" data-startref="ch6wrp3" data-type="indexterm" id="id2076"/><a contenteditable="false" data-primary="" data-startref="ch6wrp4" data-type="indexterm" id="id2077"/><a contenteditable="false" data-primary="" data-startref="ch6wrp5" data-type="indexterm" id="id2078"/> </p>
+        <p>Special Function Unit（SFU）<a contenteditable="false" data-primary="architecture of GPUs" data-secondary="Special Function Unit" data-type="indexterm" id="id2079"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="Special Function Unit" data-type="indexterm" id="id2080"/><a contenteditable="false" data-primary="Special Function Unit (SFU)" data-type="indexterm" id="id2081"/>执行部分 transcendental/approximate operation，例如 reciprocal、square root，以及由编译器/library 映射的部分 sine/cosine 路径。具体指令可能由 SFU、multi-instruction sequence 或 library 实现；不能把所有这些数学函数都固定映射到同一独立 pipeline。</p>
+        <p>SFU 与其他 execution resource 的并行性可以增加 instruction-level parallelism，但 dependency、scheduler issue、operand 和 shared resource 仍可能让复杂数学操作位于关键路径。“独立 pipeline”不意味着主 math/memory 指令永远无需等待，也不保证 mixed-operation kernel 自动加速。</p>
+        <p>当存在足够独立 ready work 时，多个 scheduler 可让多个 warp 在同一 cycle 取得进展。原文进一步给出每 SM 合计 16 条 LD/ST pipeline、每 scheduler 4 条的固定数字；这类 unit count、吞吐与 pairing 不属于 CUDA programming model 保证，且 load/store instruction 会经过 address generation、coalescing、cache 与 memory hierarchy，不能由 pipeline 数直接推导 transaction throughput。</p>
+        <div data-type="tip">
+          <p>LD/ST unit 数量、issue pairing 与吞吐不受跨架构保证。应使用 profiler counter 判断 kernel 是否受 memory issue、dependency、cache/memory bandwidth 或 compute 限制，并查阅目标架构的 NVIDIA 文档；可从 Blackwell <a href="https://oreil.ly/DRKh5">tuning guide</a> 开始。</p>
+        </div>
+        <p>概括而言，GPU 擅长具有大量并行工作和足够算术/内存并发度的 workload，例如矩阵乘、卷积及许多 elementwise/reduction 操作。开发者可以直接编写 CUDA C++ kernel，也可通过 PyTorch 等框架或 OpenAI Triton 等 domain-specific GPU language 间接生成 kernel。</p>
+        <p>在深入 kernel 开发和 memory-access 优化之前，先回顾 CUDA thread hierarchy 及支撑这些<span class="keep-together">实践</span>的关键术语。</p>
+        <section data-pdf-bookmark="Threads, Warps, Blocks, and Grids" data-type="sect2"><div class="sect2" id="ch06_threads_warps_blocks_and_grids_1757308039143307">
+          <h2>线程、warp、block 与 grid</h2>
+          <p>CUDA 把并行工作组织为<a contenteditable="false" data-primary="architecture of GPUs" data-secondary="threads" data-type="indexterm" id="ch6thrd"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="threads" data-type="indexterm" id="ch6thrd2"/><a contenteditable="false" data-primary="threads" data-secondary="GPU architecture" data-type="indexterm" id="ch6thrd3"/><a contenteditable="false" data-primary="thread blocks" data-type="indexterm" id="ch6thrd4"/><a contenteditable="false" data-primary="architecture of GPUs" data-secondary="thread blocks" data-type="indexterm" id="ch6thrd5"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="thread blocks" data-type="indexterm" id="ch6thrd6"/><a contenteditable="false" data-primary="grids" data-type="indexterm" id="ch6thrd7"/><a contenteditable="false" data-primary="cooperative thread array (CTA)" data-seealso="thread blocks" data-type="indexterm" id="id2082"/><a contenteditable="false" data-primary="CTA (cooperative thread array)" data-seealso="thread blocks" id="id2083" data-type="indexterm"/>thread、thread block（也称 <em>cooperative thread array</em>，CTA）和 grid 层级。每个 logical thread 执行 kernel program 的一个实例；thread 组成 block，kernel launch 的所有 block 构成 grid。许多现代 NVIDIA GPU 的单 block 上限为 1,024 个 thread，但还受每维上限、register/shared memory 和目标 device attribute 限制，如图 <a data-type="xref" href="#ch06_figure_3_1757308039123559">6-3</a> 所示。</p>
+          <figure><div class="figure" id="ch06_figure_3_1757308039123559">
+            <img alt="展示 CUDA 工作负载层级的示意图：核心执行线程，流式多处理器执行线程块，整个 GPU 单元执行内核网格。" src="assets/aisp_0603.png"/>
+            <h6><span class="label">图 6-3. </span>thread、thread block（CTA）与 grid</h6>
+          </div></figure>
+          <p>通过设置足够大的 grid，同一 kernel 逻辑可以覆盖大量 logical thread。CUDA runtime 把 block 调度到可用 SM；PyTorch 等 framework 通常生成并启动相应 kernel，但并不直接规定每个 block 的硬件调度顺序。图 <a data-type="xref" href="#ch06_figure_4_1757308039123578">6-4</a> 从另一角度展示 thread hierarchy，包括发起 device kernel 的 CPU host。</p>
+          <figure><div class="figure" id="ch06_figure_4_1757308039123578">
+            <img alt="展示线程层级的示意图：基于 CPU 的主机如何在 GPU 设备上启动内核，线程块如何组织在网格中。" src="assets/aisp_0604.png"/>
+            <h6><span class="label">图 6-4. </span>包含 CPU host 与 GPU kernel launch 的 thread hierarchy</h6>
+          </div></figure>
+          <p>经典 CUDA programming model 中，<a contenteditable="false" data-primary="architecture of GPUs" data-secondary="thread block clusters" data-type="indexterm" id="id2084"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="thread block clusters" data-type="indexterm" id="id2085"/><a contenteditable="false" data-primary="thread block clusters" data-type="indexterm" id="id2086"/>不同 block 必须可独立执行，不能依赖普通 block 间同步。Hopper 及后续受支持架构引入 thread block cluster：同一 cluster 的 block 会被协同调度到同一 GPU Processing Cluster 范围，并可使用 cluster-scoped synchronization 与 distributed shared memory。它不是所有“现代 GPU”的通用能力。</p>
+          <p>在 thread block cluster 内，<a contenteditable="false" data-primary="distributed shared memory (DSMEM)" data-secondary="thread block clusters" data-tertiary="threads accessing each other’s shared memory" data-type="indexterm" id="id2087"/><a contenteditable="false" data-primary="thread block clusters" data-secondary="distributed shared memory" data-tertiary="threads accessing each other’s shared memory" data-type="indexterm" id="id2088"/><a contenteditable="false" data-primary="thread blocks" data-secondary="distributed shared memory" data-tertiary="threads accessing each other’s shared memory" data-type="indexterm" id="id2089"/>一个 block 可通过 cluster address mapping 访问其他 block 的 shared memory，并使用 cluster barrier。DSMEM 为 cluster 中各 block 的 shared-memory segment 提供分布式地址空间，可支持跨 block tile、histogram 或部分矩阵算法；是否有利取决于访问模式、cluster size 与 occupancy，如图 <a data-type="xref" href="#ch06_figure_5_1757308039123596">6-5</a>。</p>
+          <figure><div class="figure" id="ch06_figure_5_1757308039123596">
+            <img alt="展示硬件支持的 DSMEM 架构的示意图，显示线程块集群中多个 SM 之间的共享内存连接。" src="assets/aisp_0605.png"/>
+            <h6><span class="label">图 6-5. </span>多 block thread block cluster 中的硬件支持 DSMEM</h6>
+          </div></figure>
+          <p>DSMEM 通过片上互连让 cluster 内 block 访问彼此的 shared-memory segment，并支持相应 read、write 和 atomic operation。它不是把“所有 SM 的 bank”合并成均匀共享池：cluster 只覆盖被协同调度的 block，remote DSMEM access 通常比 local shared memory 延迟更高，目标 block 也必须保持存活直到访问完成。它可避免部分 global-memory traffic，但同步与远端访问成本仍需测量。</p>
+          <div data-type="tip">
+            <p>第 <a data-type="xref" href="ch10.html#ch10_intra_kernel_pipelining_warp_specialization_and_1757308054839290">10 章</a>将进一步讨论 thread block cluster 与 DSMEM。本章先聚焦 block 内 shared-memory 优化；使用 cluster 前应确认 compute capability、portable cluster size、launch API 和资源限制。</p>
+          </div>
+          <p>在一个 thread block 内，thread 可通过低延迟 on-chip shared memory 交换数据，并用 <code>__syncthreads()</code> 建立 block-wide barrier 与 shared/global memory ordering。该 barrier 必须由 block 中所有未退出的 thread 以一致控制流到达，否则可能 hang 或产生未定义行为。只应删除经依赖分析证明冗余的同步，不能单纯因为 barrier 有开销而最小化，如图 <a data-type="xref" href="#ch06_figure_6_1757308039123612">6-6</a>。</p>
+          <figure><div class="figure" id="ch06_figure_6_1757308039123612">
+            <img alt="展示在线程块内两个代码段之间使用 __syncthreads() 进行线程同步的示意图，强调需要最小化同步点。" src="assets/aisp_0606.png"/>
+            <h6><span class="label">图 6-6. </span>在两段代码之间同步一个 block 内的所有 thread</h6>
+          </div></figure>
+          <p>目标是保留 correctness 所需的同步，并消除不必要的 barrier。warp scheduler 可在一个 warp 因 global-memory dependency、cache miss 或 pipeline dependency 无法发射时选择其他 ready warp；这是零开销硬件调度，而不是类似 CPU context switch 的“快速切换”。能否隐藏 latency 取决于 resident warp、独立工作、occupancy 和资源限制。</p>
+          <p>thread block 会进一步划分为由 32 个 thread 组成的 warp。在 SIMT model 下，warp scheduler 以 warp 为调度单位发射指令；各 active lane 执行同一条 warp instruction，但 independent thread scheduling、predication 和 divergence 会使“lockstep”只是一种简化描述，如图 <a data-type="xref" href="#ch06_figure_7_1757308039123628">6-7</a> 所示。</p>
+          <figure><div class="figure" id="ch06_figure_7_1757308039123628">
+            <img alt="展示 warp 调度器与指令分发单元执行 warp 的示意图，说明不同 warp 的指令如何随时间推进。" src="assets/aisp_0607.png"/>
+            <h6><span class="label">图 6-7. </span>warp（32 个 thread）作为调度单位推进，其指令由 warp scheduler 管理</h6>
+          </div></figure>
+          <p>让较多 warp 同时驻留<a contenteditable="false" data-primary="warps" data-secondary="high occupancy" data-type="indexterm" id="id2090"/><a contenteditable="false" data-primary="SMs (streaming multiprocessors)" data-secondary="high occupancy" data-type="indexterm" id="id2091"/><a contenteditable="false" data-primary="high occupancy" data-type="indexterm" id="id2092"/><a contenteditable="false" data-primary="occupancy" data-secondary="high occupancy" data-type="indexterm" id="id2093"/>在 SM 上，通常称为 <em>high occupancy</em>（高占用率）。当一个 warp stall 时，较多 resident warp 会提高 scheduler 找到另一个 ready warp 的机会，从而帮助隐藏 latency。不过 occupancy 衡量的是 active warp 相对于硬件上限的比例，并不直接等同于 execution-unit utilization 或较高性能。</p>
+          <p>因此，occupancy 必须与每个 thread/block 的 register 和 shared-memory 需求一起权衡。register pressure 过高时，compiler 可能把部分值 spill 到 local memory；local memory 位于 device-memory address space，访问会经过 cache/global-memory hierarchy，因而可能引入额外 traffic 与 stall。应结合 achieved occupancy、register/shared-memory usage、stall reason 和实际 throughput 进行 profiling，再选择既不过度压缩每线程资源、也不造成资源<span class="keep-together">争用</span>的 block size。</p>
+          <div data-type="tip">
+            <p>第 <a data-type="xref" href="ch08.html#ch08_occupancy_tuning_warp_efficiency_and_instruction_1757308048870754">8 章</a>将详细介绍 occupancy tuning；在理解 SM、warp 与 thread 的关系时，应先把 occupancy 视为影响 latency hiding 的一个因素，而不是单独追求的性能目标。</p>
+          </div>
+          <p>thread block 必须能够彼此独立地执行，且执行顺序没有保证。这让 GPU scheduler 可以把 block 分派到可用 SM，并随 SM 数量扩展并行执行。grid–block–warp hierarchy 为可扩展性提供了 programming-model 基础，但并不保证所有 CUDA kernel 都能在未来 GPU 上原样获得正确性、兼容性或最佳性能；程序仍须遵守同步与内存模型，并受 compute capability、binary/PTX compatibility 和资源上限约束。</p>
+          <p>throughput 还取决于 warp execution efficiency。对同一 warp 而言，uniform control flow 通常能保持更多 lane 同时有效，而合并良好的 memory access 有助于减少 memory transaction。<a contenteditable="false" data-primary="warps" data-secondary="warp divergence" data-type="indexterm" id="id2094"/><a contenteditable="false" data-primary="threads" data-secondary="warps" data-tertiary="warp divergence" data-type="indexterm" id="id2095"/>如果部分 thread 进入 <code>if</code> path、其余 thread 进入 <code>else</code> path，warp 会在不同 path 上分别执行，并屏蔽当前 path 中 inactive lane；这称为 <em>warp divergence</em>，如图 <a data-type="xref" href="#ch06_figure_8_1757308039123643">6-8</a> 所示。具体实现还可能使用 predication 和 architecture-specific reconvergence mechanism。<a contenteditable="false" data-primary="" data-startref="ch6thrd" data-type="indexterm" id="id2096"/><a contenteditable="false" data-primary="" data-startref="ch6thrd2" data-type="indexterm" id="id2097"/><a contenteditable="false" data-primary="" data-startref="ch6thrd3" data-type="indexterm" id="id2098"/><a contenteditable="false" data-primary="" data-startref="ch6thrd4" data-type="indexterm" id="id2099"/><a contenteditable="false" data-primary="" data-startref="ch6thrd5" data-type="indexterm" id="id2100"/><a contenteditable="false" data-primary="" data-startref="ch6thrd6" data-type="indexterm" id="id2101"/><a contenteditable="false" data-primary="" data-startref="ch6thrd7" data-type="indexterm" id="id2102"/></p>
+          <figure><div class="figure" id="ch06_figure_8_1757308039123643">
+            <img alt="展示左侧具有分叉执行路径的 warp 分歧，以及右侧具有同步线程的 warp 一致性的示意图。" src="assets/aisp_0608.png"/>
+            <h6><span class="label">图 6-8. </span>SIMT warp divergence（左）与 uniform execution（右）</h6>
+          </div></figure>
+          <p>warp divergence 会屏蔽 inactive lane，并为实际采用的 path 执行相应指令，因此会减少 useful lane utilization。其代价并不必然等于 branch 数：它取决于各 path 的指令长度、active mask、predication、memory behavior 与 reconvergence。第 <a data-type="xref" href="ch08.html#ch08_occupancy_tuning_warp_efficiency_and_instruction_1757308048870754">8 章</a>将进一步讨论如何检测、profile 和缓解 warp divergence。</p>
+          <div data-type="tip">
+            <p>严格意义上的 warp divergence 发生在同一 warp 的 lane 采取不同 control-flow path 时。不同 warp 采取不同 path 不会产生同一 warp 内的 divergence <span class="keep-together">penalty</span>，但仍可能因 path 长度不均、block tail effect、memory access 或资源竞争而降低整体效率。</p>
+          </div>
+        </div></section>
+        <section data-pdf-bookmark="Choosing Threads-per-Block and Blocks-per-Grid Sizes" data-type="sect2"><div class="sect2" id="ch06_choosing_threads_per_block_and_blocks_per_grid_siz_1757308039143364">
+          <h2>选择每 block 的 thread 数和每 grid 的 block 数</h2>
+          <p>影响 GPU 性能的一个重要因素<a contenteditable="false" data-primary="architecture of GPUs" data-secondary="threads-per-block and blocks-per-grid" data-type="indexterm" id="ch6per"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="threads-per-block and blocks-per-grid" data-type="indexterm" id="ch6per2"/><a contenteditable="false" data-primary="grids" data-secondary="blocks-per-grid sizes" data-type="indexterm" id="ch6per3"/><a contenteditable="false" data-primary="performance metrics" data-secondary="thread block size" data-type="indexterm" id="id2103"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="thread block size" data-type="indexterm" id="id2104"/><a contenteditable="false" data-primary="architecture of GPUs" data-secondary="thread blocks" data-tertiary="thread block size" data-type="indexterm" id="id2105"/><a contenteditable="false" data-primary="thread blocks" data-secondary="thread block size" data-type="indexterm" id="id2106"/>，是选择与硬件 32-thread warp 对齐的 thread-block size。因此，通常选用 32 的整数倍。例如，包含 256 个 thread 的 block 正好形成 8 个 warp（256 ÷ 32）；包含 33 个 thread 的 block 则需要两个 warp，第二个 warp 仅有 1/32 的 lane active。后者会降低 lane utilization，因为不完整的 warp 仍占用相应 warp resource；不过最佳 block size 还取决于 register、shared memory、latency、instruction mix 和 workload shape，不能只凭 32 的倍数决定。</p>
+          <p>不同 GPU generation 还有不同的 hardware limit，<a contenteditable="false" data-primary="SMs (streaming multiprocessors)" data-secondary="GPU architecture" data-tertiary="threads and registers per SM" data-type="indexterm" id="id2107"/>包括每 SM 最大 thread 数、每 block 最大 thread 数和 register-file capacity。这些限制会约束可用 block size 和 resident-block 数。大 block 往往消耗更多 block-level resource；但是否发生 <em>register spilling</em> 主要由每 thread register demand、compiler allocation granularity 和 launch constraint 决定，并非 block 较大就必然 spill。</p>
+          <p>大 block 也可能提高每 block 的 shared-memory allocation，从而减少同一 SM 可同时驻留的 block 数。原文以 Blackwell 为例，给出每 SM 约 228 KB shared memory、单 block 最多约 227 KB usable 的数字；实际可用量取决于具体 GPU、compute capability、L1/shared-memory carveout、static allocation 和 opt-in dynamic-shared-memory setting，应查询目标设备属性。</p>
+          <p>这些 hardware limit 共同决定一个 SM 上能同时 active 的 block 与 warp 数。<a contenteditable="false" data-primary="occupancy" data-secondary="hardware limiting" data-type="indexterm" id="id2108"/><a contenteditable="false" data-primary="hardware" data-secondary="occupancy limited by" data-type="indexterm" id="id2109"/>occupancy 正是对此类 resident warp 比例的度量。较小 block 有时能让更多 block 驻留并改善 latency hiding，但也可能形成不完整 warp、减少每 block 可协作的 thread，或受到 active-block 上限约束；因此并不保证 occupancy 或 throughput 更高。</p>
+          <p>调优时需要了解目标 GPU 上 thread、thread block、warp 和 SM 的数量级及限制。图 <a data-type="xref" href="#ch06_figure_9_1757308039123658">6-9</a> 以 Blackwell GPU 为例展示这些资源的相对层级和原书列出的上限。</p>
+          <figure><div class="figure" id="ch06_figure_9_1757308039123658">
+            <img alt="展示 Blackwell GPU 上线程的层级结构和硬件限制的示意图，显示数十万线程分布在流式多处理器、线程块和 warp 等多个层级。" src="assets/aisp_0609.png"/>
+            <h6><span class="label">图 6-9. </span>Blackwell GPU 上 thread 的相对规模与硬件限制</h6>
+          </div></figure>
+          <p><a data-type="xref" href="#ch06_table_2_1757308039130120">表 6-2</a> 汇总了原书为 Blackwell B200 <a contenteditable="false" data-primary="Blackwell GPU (NVIDIA)" data-secondary="architecture" data-tertiary="B200" data-type="indexterm" id="id2110"/><a contenteditable="false" data-primary="B200 (NVIDIA Blackwell)" data-type="indexterm" id="id2111"/><a contenteditable="false" data-primary="NVIDIA Blackwell B200" data-type="indexterm" id="id2112"/><a contenteditable="false" data-primary="Blackwell GPU (NVIDIA)" data-secondary="Blackwell B200 GPU" data-type="indexterm" id="id2113"/>列出的部分 GPU limit。其他限制可参阅 NVIDIA <a href="https://oreil.ly/DRKh5">网站</a>。不同 generation、SKU 和 compute capability 可能不同，应用还应在运行时查询目标系统的 device attribute。</p>
+          <table id="ch06_table_2_1757308039130120">
+            <caption><span class="label">表 6-2. </span>thread-level 与 block-level limit（Blackwell B200）</caption>
+            <thead>
+              <tr>
+                <th>资源</th>
+                <th>硬件上限</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  warp size
+                </td>
+                <td>32 个 thread</td>
+                <td>warp 包含 32 个 thread，是 SIMT execution 的基本调度粒度。<br/>通常选择 32 的倍数以避免不完整 warp，但最终 block size 应由 profiling 决定。</td>
+              </tr>
+              <tr>
+                <td>
+                  每个 thread block 的最大 thread 数
+                </td>
+                <td>1,024 个 thread</td>
+                <td><code>blockDim.x * blockDim.y * blockDim.z ≤ 1024</code>.</td>
+              </tr>
+              <tr>
+                <td>
+                  每个 thread block 的最大 warp 数
+                </td>
+                <td>32 个 warp</td>
+                <td>1,024 个 thread ÷ 每 warp 32 个 thread = 每 block 最多 32 个 warp。</td>
+              </tr>
+            </tbody>
+            
+          </table>
+          <p>32-thread warp size 使 32 的倍数通常成为 block dimension 的合理起点，从而形成完整 warp。表中每 block 最多 1,024 个 thread，因此最多对应 32 个 warp。<a contenteditable="false" data-primary="occupancy" data-secondary="hardware limiting" data-type="indexterm" id="id2114"/><a contenteditable="false" data-primary="hardware" data-secondary="occupancy limited by" data-type="indexterm" id="id2115"/>block 一旦驻留，SM 的 warp、thread、block、register 和 shared-memory 上限会共同决定还能容纳多少 block，进而限制 occupancy。</p>
+          <p>不同 GPU generation 还具有 per-SM limit，<a contenteditable="false" data-primary="SMs (streaming multiprocessors)" data-secondary="SM-resident limits" data-type="indexterm" id="id2116"/><a contenteditable="false" data-primary="SM-resident limits" data-type="indexterm" id="id2117"/>通常称为 <em>SM-resident limit</em>。表 <a data-type="xref" href="#ch06_table_3_1757308039130137">6-3</a> 汇总了原书给出的 Blackwell B200 数值；这些数值须按具体 device specification 验证。</p>
+          <table id="ch06_table_3_1757308039130137">
+            <caption><span class="label">表 6-3. </span>SM-resident resource limit（Blackwell B200）</caption>
+            <thead>
+              <tr>
+                <th>资源（每 SM）</th>
+                <th>硬件上限</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  每 SM 最大 resident warp 数
+                </td>
+                <td>64 个 warp</td>
+                <td><p>原书给出的硬件上限为 64 个 resident warp（64 × 32 = 2,048 个 thread）。</p>
+                  <p>注意：多个近期架构采用这一上限，但它不是 CUDA 对所有 generation 的永久保证。</p></td>
+              </tr>
+              <tr>
+                <td>
+                  每 SM 最大 resident thread 数
+                </td>
+                <td>2,048 个 thread</td>
+                <td><p>等于 64 个 warp × 每 warp 32 个 thread。若每 block 使用 1,024 个 thread，仅按 thread 上限计算，一个 SM 最多可驻留两个此类 block；register、shared memory 等约束可能使实际数量更低。</p>
+                  <p>使用较小 block（例如 256 个 thread）可能允许更多 block 驻留；只按 thread 上限计算，最多为 8 × 256 = 2,048 个 thread。这可能提高 occupancy 并帮助隐藏 <span class="keep-together">latency，但</span> active-block limit、资源分配和 workload 粒度仍会约束实际结果。</p></td>
+              </tr>
+              <tr>
+                <td>
+                  每 SM 最大 active block 数
+                </td>
+                <td>32 个 block</td>
+                <td><p>原书列出的上限为一个 SM 同时驻留 32 个 thread block；只有足够小且其他资源约束允许时才可能达到。</p></td>
+              </tr>
+            </tbody>
+            
+          </table>
+          <p>按原书给出的 Blackwell 上限，每 SM 最多有 64 个 concurrent resident warp、32 个 active block 和 2,048 个 resident thread。这三项是彼此独立的上限，不能由其中一项简单“对应”推出另一项；实际 residency 取所有 thread/register/shared-memory/block constraint 中最严格者。<a contenteditable="false" data-primary="grids" data-secondary="maximum dimensions" data-type="indexterm" id="id2118"/>CUDA grid 的各维也有上限，如表 <a data-type="xref" href="#ch06_table_4_1757308039130152">6-4</a> 所示。</p>
+          <table id="ch06_table_4_1757308039130152">
+            <caption><span class="label">表 6-4. </span>CUDA grid limit</caption>
+            <thead>
+              <tr>
+                <th>网格维度</th>
+                <th>上限</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  X、Y 或 Z 维的最大 block 数
+                </td>
+                <td><p>X：2,147,483,647 个 block</p>
+                  <p>Y：65,535 个 block</p>
+                  <p>Z：65,535 个 block</p></td>
+                <td>表中理论 3D dimension 上限为 2,147,483,647 × 65,535 × 65,535 个 block；实际 launch 还受参数范围、workload 和运行资源约束。</td>
+              </tr>
+              <tr>
+                <td>
+                  最大 concurrent grid（kernel）数
+                </td>
+                <td>128 个 grid</td>
+                <td>原书列出单 device 最多并发执行 128 个 kernel。该上限依架构而定，且表示 kernel 可并发取得执行进展，并非 128 个完整 grid 的所有 block 同时 resident。</td>
+              </tr>
+            </tbody>
+            
+          </table>
+          <p>了解理论 grid limit 很有用，但 performance 通常更早受到每 block/per-SM resource、memory traffic 和可用 parallel work 的限制。原文称“单维超过 65,535 个 block”就应改用 2D/3D grid 或 multiple launch，这只适用于 Y/Z 上限或旧式限制的语境；对表中所述现代 CUDA device，X 维本身可达到 2,147,483,647。需要跨维映射或超出合法 dimension 时，可采用 2D/3D grid、grid-stride loop 或 multiple kernel launch，且必须使用足够宽的 index arithmetic 防止 overflow。<a contenteditable="false" data-primary="" data-startref="ch6per" data-type="indexterm" id="id2119"/><a contenteditable="false" data-primary="" data-startref="ch6per2" data-type="indexterm" id="id2120"/><a contenteditable="false" data-primary="" data-startref="ch6per3" data-type="indexterm" id="id2121"/></p>
+        </div></section>
+        <section class="pagebreak-before" data-pdf-bookmark="CUDA GPU Backward and Forward Compatibility Model" data-type="sect2"><div class="sect2" id="ch06_cuda_gpu_backward_and_forward_compatibility_model_1757308039143416">
+          <h2 class="less_space">CUDA GPU 的后向与前向兼容模型</h2>
+          <p>CUDA 的重要优势之一<a contenteditable="false" data-primary="programming" data-secondary="PTX" data-tertiary="compatibility across GPU generations" data-type="indexterm" id="id2122"/><a contenteditable="false" data-primary="CUDA" data-secondary="compatibility across GPU generations" data-type="indexterm" id="id2123"/><a contenteditable="false" data-primary="compilers" data-secondary="PTX" data-tertiary="CUDA compatibility across GPU generations" data-type="indexterm" id="id2124"/><a contenteditable="false" data-primary="future hardware from NVIDIA" data-secondary="GPU programming across generations" data-type="indexterm" id="id2125"/><a contenteditable="false" data-primary="PTX (parallel thread execution)" data-secondary="code from compiler" data-type="indexterm" id="id2126"/><a contenteditable="false" data-primary="PTX (parallel thread execution)" data-secondary="code from compiler" data-tertiary="CUDA compatibility across GPU generations" data-type="indexterm" id="id2127"/><a contenteditable="false" data-primary="compilers" data-secondary="PTX" data-type="indexterm" id="id2128"/><a contenteditable="false" data-primary="nvcc CUDA compiler" data-secondary="compatibility across GPU generations" data-type="indexterm" id="id2129"/><a contenteditable="false" data-primary="programming" data-secondary="PTX" data-tertiary="code from compiler" data-type="indexterm" id="id2130"/>，是其跨 GPU generation 的 compatibility model。若 binary 中包含目标 GPU driver 能够 JIT 的 PTX，今天编译的 kernel 通常可以在未来受支持的 GPU 上重新生成 machine code。若只发布单一 architecture 的 SASS/cubin，例如 Hopper 的 <code>sm_90</code> 或 Blackwell 的 <code>sm_100</code>，而不包含合适的 PTX，则不能据此保证在更新 architecture 上运行。family-specific target（如 <code>sm_100f</code> 或 <code>compute_100f</code>）只承诺在相应 architecture family 范围内兼容；architecture-specific feature 的范围可能更窄。实践中通常发布 fat binary：为已知目标包含相应 cubin，并包含适当 virtual architecture 的 PTX 作为未来 GPU 的 JIT fallback；具体 target 组合应由 CUDA Toolkit 文档和部署矩阵确定。</p>
+          <p>可以设置 <code>CUDA_FORCE_PTX_JIT=1</code>，在 load 时忽略 embedded cubin 并强制 driver 从 embedded PTX 进行 JIT，以测试是否存在可用的 PTX fallback；生成结果通常会进入 compute cache。若应用所需 kernel 没有可 JIT 的 PTX，load 或 launch 可能失败，表明需要用合适 target 重新构建。不过测试通过只证明当前 driver/GPU 能 JIT 所含 PTX，并不自动证明所有未来 driver、feature 或 dependency 都兼容。cubin 与 PTX 的组合让同一 codebase 可以覆盖多个 legacy 和新 GPU，但仍需分别构建、测试并满足 driver/toolkit compatibility。</p>
+          <div data-type="tip">
+            <p>要同时覆盖现有旧 GPU 和未来 GPU，应为需要直接支持的现有 architecture 包含 cubin，并显式包含合适的 PTX 以提供 forward-JIT path；不存在一个可无条件覆盖所有 GPU 与 feature 的“generic target”。使用新硬件的 family-specific 或 architecture-specific optimization 时，还应为其他目标提供功能 fallback，并在每个受支持的 GPU、driver 和 Toolkit 组合上验证 correctness 与 performance。<a contenteditable="false" data-primary="" data-startref="ch6arc" data-type="indexterm" id="id2131"/><a contenteditable="false" data-primary="" data-startref="ch6arc2" data-type="indexterm" id="id2132"/> </p>
+          </div>
+        </div></section>
+      </div></section>
+      <section data-pdf-bookmark="CUDA Programming Refresher" data-type="sect1"><div class="sect1" id="ch06_cuda_programming_refresher_1757308039143490">
+        <h1>CUDA 编程回顾</h1>
+        <p>在 CUDA C++ 中，可通过编写 kernel 定义并行工作。<a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="kernels for parallel work" data-type="indexterm" id="ch6krnl"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="kernels for parallel work" data-type="indexterm" id="ch6krnl2"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="__global__" data-tertiary-sortas="global" data-type="indexterm" id="id2133"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="__global__" data-tertiary-sortas="global" data-type="indexterm" id="id2134"/><a contenteditable="false" data-primary="__global__" data-type="indexterm" id="id2135"/><a contenteditable="false" data-primary="__global__" data-primary-sortas="global" data-type="indexterm" id="id2136"/><a contenteditable="false" data-primary="compilers" data-secondary="__global__" data-secondary-sortas="global" data-type="indexterm" id="id2137"/><a contenteditable="false" data-primary="nvcc CUDA compiler" data-secondary="__global__" data-secondary-sortas="global" data-type="indexterm" id="id2138"/><a contenteditable="false" data-primary="chevron syntax (&lt;&lt;&lt; &gt;&gt;&gt;)" data-secondary="how many threads" data-type="indexterm" id="id2139"/><a contenteditable="false" data-primary="&lt;&lt;&lt; &gt;&gt;&gt; (chevron syntax)" data-secondary="how many threads" data-type="indexterm" id="id2140"/><a contenteditable="false" data-primary="threads" data-secondary="programming CUDA" data-tertiary="chevron syntax (&lt;&lt;&lt; &gt;&gt;&gt;)" data-type="indexterm" id="id2141"/><a contenteditable="false" data-primary="thread blocks" data-secondary="programming CUDA" data-tertiary="blocksPerGrid" data-type="indexterm" id="id2142"/><a contenteditable="false" data-primary="thread blocks" data-secondary="programming CUDA" data-tertiary="threadsPerBlock" data-type="indexterm" id="id2143"/><a contenteditable="false" data-primary="threads" data-secondary="programming CUDA" data-tertiary="threadsPerBlock" data-type="indexterm" id="id2144"/><a contenteditable="false" data-primary="threadsPerBlock" data-type="indexterm" id="id2145"/><a contenteditable="false" data-primary="blocksPerGrid" data-type="indexterm" id="id2146"/><a contenteditable="false" data-primary="grids" data-secondary="blocksPerGrid parameter" data-type="indexterm" id="id2147"/>kernel 是用 <code>__global__</code> 标注、由 host 调用并在 GPU device 上执行的特殊函数。CPU host code 使用 <code>&lt;&lt;&lt; &gt;&gt;&gt; </code>（chevron syntax）指定 launch configuration。本例使用 <code>blocksPerGrid</code> 表示 grid 中的 thread-block 数，使用 <code>threadsPerBlock</code> 表示每个 block 的 thread 数；完整 configuration 还可包含 dynamic shared-memory byte 数和 stream。</p>
+        <p>下面的简单示例展示 CUDA kernel 与 kernel launch 的主要组成部分。该 kernel 原地把 input array 的每个元素乘以 2，因此不另行分配 output array。CUDA toolchain 会把 <code>__global__</code> 函数编译为 GPU device code；launch 创建由许多 logical thread 组成的 grid，每个 thread 执行该 kernel 的一个实例：</p>
+
+        <pre data-code-language="cpp" data-type="programlisting"><code class="c1">//-------------------------------------------------------</code>
+<code class="c1">// Kernel: myKernel running on the device (GPU)</code>
+<code class="c1">//   - input : device pointer to float array of length N</code>
+<code class="c1">//   - N   : total number of elements in the input</code>
+<code class="c1">//-------------------------------------------------------</code>
+
+<code class="n">__global__</code><code class="w"> </code><code class="kt">void</code><code class="w"> </code><code class="n">myKernel</code><code class="p">(</code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">input</code><code class="p">,</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="c1">// Compute a unique global thread index</code>
+<code class="w">    </code><code class="kt">int</code><code class="w"> </code><code class="n">idx</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">blockIdx</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="n">blockDim</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadIdx</code><code class="p">.</code><code class="n">x</code><code class="p">;</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Only process valid elements</code>
+<code class="w">    </code><code class="k">if</code><code class="w"> </code><code class="p">(</code><code class="n">idx</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="n">input</code><code class="p">[</code><code class="n">idx</code><code class="p">]</code><code class="w"> </code><code class="o">*=</code><code class="w"> </code><code class="mf">2.0f</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+<code class="p">}</code><code class="w"/>
+
+<code class="c1">// This code runs on the host (CPU)</code>
+<code class="kt">int</code><code class="w"> </code><code class="n">main</code><code class="p">()</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="c1">// 1) Problem size: one million floats</code>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">1'000'000</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="kt">float</code><code class="w"> </code><code class="o">*</code><code class="n">h_input</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="kt">float</code><code class="w"> </code><code class="o">*</code><code class="n">d_input</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 1) Allocate input float array of size N on host</code>
+<code class="w">    </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 2) Initialize host data (for example, all ones)</code>
+<code class="w">    </code><code class="k">for</code><code class="w"> </code><code class="p">(</code><code class="kt">int</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">;</code><code class="w"> </code><code class="o">++</code><code class="n">i</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="n">h_input</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mf">1.0f</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 3) Allocate device memory for input on the device</code>
+<code class="w">    </code><code class="n">cudaMalloc</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 4) Copy data from the host to the device</code>
+<code class="w">    </code><code class="n">cudaMemcpy</code><code class="p">(</code><code class="n">d_input</code><code class="p">,</code><code class="w"> </code><code class="n">h_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"/>
+<code class="w">      </code><code class="n">cudaMemcpyHostToDevice</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 5) Choose kernel launch parameters</code>
+<code class="w">    </code>
+<code class="w">    </code><code class="c1">// Number of threads per block (multiple of 32)</code>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">threadsPerBlock</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">256</code><code class="p">;</code><code class="w"> </code>
+
+<code class="w">    </code><code class="c1">// Number of blocks per grid (3,907 for N = 1000000)</code>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">blocksPerGrid</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="p">(</code><code class="n">N</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadsPerBlock</code><code class="w"> </code><code class="o">-</code><code class="w"> </code><code class="mi">1</code><code class="p">)</code><code class="w"> </code><code class="o">/</code><code class="w"/>
+<code class="w">      </code><code class="n">threadsPerBlock</code><code class="p">;</code><code class="w"> </code>
+
+<code class="w">    </code><code class="c1">// 6) Launch myKernel across blocksPerGrid blocks</code>
+<code class="w">    </code><code class="c1">// Each block has threadsPerBlock number of threads</code>
+<code class="w">    </code><code class="c1">// Pass a reference to the d_input device array</code>
+<code class="w">    </code><code class="n">myKernel</code><code class="o">&lt;&lt;&lt;</code><code class="n">blocksPerGrid</code><code class="p">,</code><code class="w"> </code><code class="n">threadsPerBlock</code><code class="o">&gt;&gt;&gt;</code><code class="p">(</code><code class="n">d_input</code><code class="p">,</code><code class="w"/>
+<code class="w">      </code><code class="n">N</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="c1">// 7) Wait for the kernel to finish running on device</code>
+<code class="w">    </code><code class="n">cudaDeviceSynchronize</code><code class="p">();</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 8) When finished, copy the results </code>
+<code class="w">    </code><code class="c1">//    (stored in d_input) from the device back to</code>
+<code class="w">    </code><code class="c1">//     host (stored in h_input)</code>
+<code class="w">    </code><code class="n">cudaMemcpy</code><code class="p">(</code><code class="n">h_input</code><code class="p">,</code><code class="w"> </code><code class="n">d_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code>
+<code class="w">               </code><code class="n">cudaMemcpyDeviceToHost</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Cleanup: Free memory on the device and host</code>
+<code class="w">    </code><code class="n">cudaFree</code><code class="p">(</code><code class="n">d_input</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_input</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// return 0 for success!</code>
+<code class="w">    </code><code class="k">return</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code></pre>
+        <div data-type="tip">
+          <p>这段代码并未充分优化，后续章节会逐步讨论性能优化；这里先把它作为一个简单而完整的 CUDA kernel 模板。生产代码还应检查 allocation、copy、launch 和 synchronization API 的返回状态。</p>
+        </div>
+        <p>launch 时向 kernel 传入 <code>d_input</code> 和 <code>N</code>。每个 logical thread 都能读取这些参数，但通过计算不同 index 处理不同元素，从而并行划分工作。</p>
+        <p>该示例的数据流如下：</p>
+        <ol>
+          <li>
+            <p>在 host 上分配 pinned memory（<code>h_input</code>）。</p>
+          </li>
+          <li>
+            <p>使用 <code>cudaMemcpy</code> 和 <code>cudaMemcpyHostToDevice</code>，将数据从 host（<code>h_input</code>）复制到 device（<code>d_input</code>）。</p>
+          </li>
+          <li>
+            <p>在 device 上启动 kernel，传入 <code>d_input</code>。</p>
+          </li>
+          <li>
+            <p>执行同步，等待 kernel 在 device 上完成，并取得异步执行错误。</p>
+          </li>
+          <li>
+            <p>使用 <code>cudaMemcpy</code> 和 <code>cudaMemcpyDeviceToHost</code>，把结果从 device（<code>d_input</code>）复制回 host（<code>h_input</code>）。</p>
+          </li>
+          <li>
+            <p>分别使用 <code>cudaFree</code> 和 <code>cudaFreeHost</code> 释放 device memory 与 pinned host memory。</p>
+          </li>
+        </ol>
+        <p>launch kernel 时还可指定其他 CUDA configuration field，<a contenteditable="false" data-primary="&lt;&lt;&lt; &gt;&gt;&gt; (chevron syntax)" data-secondary="CUDA-specific launch parameters" data-type="indexterm" id="id2148"/><a contenteditable="false" data-primary="chevron syntax (&lt;&lt;&lt; &gt;&gt;&gt;)" data-secondary="CUDA-specific launch parameters" data-type="indexterm" id="id2149"/><a contenteditable="false" data-primary="blocksPerGrid" data-type="indexterm" id="id2150"/><a contenteditable="false" data-primary="thread blocks" data-secondary="programming CUDA" data-tertiary="blocksPerGrid" data-type="indexterm" id="id2151"/><a contenteditable="false" data-primary="thread blocks" data-secondary="programming CUDA" data-tertiary="threadsPerBlock" data-type="indexterm" id="id2152"/><a contenteditable="false" data-primary="threads" data-secondary="programming CUDA" data-tertiary="threadsPerBlock" data-type="indexterm" id="id2153"/><a contenteditable="false" data-primary="threadsPerBlock" data-type="indexterm" id="id2154"/>使用 <code>&lt;&lt;&lt; &gt;&gt;&gt;</code> 的完整形式包括 grid dimension、block dimension、dynamic shared-memory size 和 stream。本例的 <code>blocksPerGrid</code> 与 <code>threadsPerBlock</code> 对应前两个字段，也是后续小节重点讨论的 launch parameter。</p>
+        <p>为什么还要传入 input array 的长度 <code>N</code>？裸 device pointer 不携带 array length metadata，kernel 无法从 d_input 自行推断 allocation 的 logical element count。所有 thread 接收同一个 <code>N</code>，并用它判断各自计算出的 index 是否位于整个 array 的合法范围；它不是某一个 kernel instance 所处理“partition”的大小。</p>
+        <p>kernel 使用 built-in variable <code>blockDim</code>、<code>blockIdx</code> 和 <code>threadIdx</code> 计算 input array 中的 <code>idx</code>。这些变量都是三维值；本例只使用其 x component，通过 <code>blockIdx.x * blockDim.x + threadIdx.x</code> 为每个 launched thread 生成 linear index。若 grid 足够大且 index mapping 正确，各有效 thread 可以处理一个不同元素；block 实际分布到多少 SM 以及是否同时执行由 scheduler 和资源决定。</p>
+        <p>请注意 bounds check <code>if (idx &lt; N)</code>。由于 <code>N</code> 可能不是 block size 的整数倍，向上取整的 grid 会启动若干 index 超出 array 范围的 thread。例如 input array 含 63 个元素，即 <code>N = 63</code>，若本例按 64 个 thread 覆盖它，就会形成两个 warp。</p>
+        <p>第一个 warp 的 lane 对应 index 0–31；第二个 warp 对应 index 32–63。合法 array index 为 0–62，因此第二个 warp 的最后一个 lane 不执行乘法。warp 不会在“到达 <code>N = 63</code>”时整体停止，而是由每个 lane 对 predicate 求值，并在不满足条件时保持 <code>inactive</code>。</p>
+        <p>若没有 <code>if (idx &lt; N)</code> bounds check，第二个 warp 会让最后一个 lane 尝试访问 <code>idx = 63</code>，而不是原文所写的 64。这是 one-past-the-end access，可能导致 memory-checking tool 报错或 kernel fault（例如后续 API 返回 <code>cudaErrorIllegalAddress</code>），也可能表现为未定义的数据破坏；越界访问不保证每次都立即产生可见错误。<code>bounds check</code> 使有效 index 执行操作，越界 lane 跳过该代码块。</p>
+        <p>CUDA kernel launch 通常相对于 host 异步执行，<a contenteditable="false" data-primary="CUDA" data-secondary="kernels executing asynchronously" data-type="indexterm" id="id2155"/><a contenteditable="false" data-primary="CUDA" data-secondary="kernels executing asynchronously" data-tertiary="global fault flag for illegal operations" data-type="indexterm" id="id2156"/><a contenteditable="false" data-primary="error handling" data-secondary="CUDA kernels" data-type="indexterm" id="id2157"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="kernel errors" data-type="indexterm" id="id2158"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="kernel errors" data-type="indexterm" id="id2159"/>device code 也不提供常规的 per-thread C++ exception propagation。launch-configuration error 可在 launch 后较早取得，而 execution fault 常在 synchronization 或后续同步性 CUDA API 处才报告，例如 <code>cudaErrorIllegalAddress</code> 或 unspecified launch failure。具体 fault handling 依错误类型而定，不能统一概括为每次非法操作都设置一个应用可见的“global fault flag”。</p>
+        <p>调试时通常在 launch 后调用 <code>cudaGetLastError()</code> 检查 launch error，再用 <code>cudaDeviceSynchronize()</code> 暴露 execution error，从而把错误定位到相邻 launch。生产 hot path 不应无条件在每次 launch 后进行 device-wide synchronization，因为这会破坏异步执行与 overlap；应检查 API return status，并在既有 dependency、event 或必要 synchronization point 处处理错误。</p>
+        <p>许多 CUDA kernel 都包含 bounds check。若没有显式检查，应确认 launch dimension、padding、tile mapping、grid-stride loop 或调用方 invariant 如何保证每次 memory access 都有效，而不能仅假定越界会被硬件安全忽略。</p>
+        <p>最后是 kernel 的实际计算逻辑。thread 计算 input array 中的 <code>idx</code> 后，把 <code>idx </code>位置的值乘以 2，并原地写回。该 kernel 不分配额外的 device buffer；局部变量 <code>idx</code> 的类型为 <code>int</code>，物理存放位置由 compiler 决定，通常可驻留 register，但不能由 C++ source 单独保证。示例启动大量 logical thread，实际并发程度和 SM 分布由硬件资源与 scheduler 决定。<a contenteditable="false" data-primary="" data-startref="ch6krnl" data-type="indexterm" id="id2160"/><a contenteditable="false" data-primary="" data-startref="ch6krnl2" data-type="indexterm" id="id2161"/></p>
+        <section data-pdf-bookmark="Configuring Launch Parameters: Blocks per Grid and Threads per Block" data-type="sect2"><div class="sect2" id="ch06_configuring_launch_parameters_blocks_per_grid_and_1757308039143564">
+          <h2>配置 launch parameter：每 grid 的 block 数与<span class="keep-together">每 block 的 thread 数</span></h2>
+          <p>如前所述，<a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="launch parameters" data-type="indexterm" id="ch6lau"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="launch parameters" data-type="indexterm" id="ch6lau2"/><a contenteditable="false" data-primary="blocksPerGrid" data-secondary="launch parameter" data-type="indexterm" id="ch6lau3"/><a contenteditable="false" data-primary="thread blocks" data-secondary="programming CUDA" data-tertiary="blocksPerGrid as launch parameter" data-type="indexterm" id="ch6lau4"/><a contenteditable="false" data-primary="thread blocks" data-secondary="programming CUDA" data-tertiary="threadsPerBlock as launch parameter" data-type="indexterm" id="ch6lau5"/><a contenteditable="false" data-primary="threads" data-secondary="programming CUDA" data-tertiary="threadsPerBlock as launch parameter" data-type="indexterm" id="ch6lau6"/><a contenteditable="false" data-primary="threadsPerBlock" data-secondary="launch parameter" data-type="indexterm" id="ch6lau7"/><a contenteditable="false" data-primary="grids" data-secondary="blocksPerGrid parameter" data-type="indexterm" id="ch6lau8"/><a contenteditable="false" data-primary="occupancy" data-secondary="configuring launch parameters" data-type="indexterm" id="id2162"/>选择 warp size（32）的整数倍通常可以避免不完整 warp。将 <code>threadsPerBlock</code> 设为 256（8 个 warp）是常见的初始测试点，可在许多 kernel 中兼顾 occupancy 和 resource usage；但它不会自动隐藏 latency 或平衡 SM，最终选择必须结合 kernel resource、problem size 和 profiler 数据：</p>
+          <dl>
+            <dt>32 个 thread 的整数倍</dt>
+            <dd>
+              <p>选择 32 的整数倍作为 block size，有助于避免最后一个 warp 只有部分 lane active。若 block size 不是整数倍，不完整 warp 的 inactive lane 不贡献 useful work，但 warp 仍消耗相应 execution/resource capacity。</p>
+            </dd>
+            <dt>隐藏 latency</dt>
+            <dd>
+              <p>足够多的 resident ready warp 可以帮助隐藏 DRAM、instruction 和 dependency latency，但所需数量依 kernel 而定。若某 SM 的 thread 上限为 2,048，仅按 thread 数计算，它最多可容纳 8 个各含 256 thread 的 block；实际 residency 还可能受 register、shared memory 和 active-block limit 限制，runtime 也不会让应用直接指定某个 SM 驻留哪 8 个 block。</p>
+            </dd>
+            <dt>占用率（occupancy）</dt>
+            <dd>
+            <p>例如，256 个 <code>threadsPerBlock</code> 对应每 block 8 个 warp。它经常能提供合理 occupancy，但是否耗尽 register 或 shared memory 取决于每 thread register 数和每 block shared-memory allocation，不能由 block size 单独判断。</p>
+            <div data-type="tip">
+              <p>在 Blackwell 等现代 GPU 上，可把每 block 256 个 thread 作为候选起点，并与 128、512 等值比较。512 不保证最大 occupancy；应使用 occupancy API/calculator 和 profiler，在 register、shared-memory、latency hiding 与实际 throughput 之间选择工作点。</p>
+            </div>
+          </dd>
+            <dt>资源平衡</dt>
+            <dd>
+              <p>256 明显低于许多现代 NVIDIA GPU 每 block 1,024 个 thread 的上限，同时提供 8 个 warp。ready warp 是否充足仍取决于每 SM resident block 数、dependency 和 instruction/memory behavior，而不是单个 block 较大就能保证。</p>
+              <p>可以从 <code>threadsPerBlock=256</code> 开始，根据 kernel 的 register/shared-memory requirement、achieved occupancy、stall reason 和 throughput，向下或向上测试 128、512 等值。</p>
+            </dd>
+          </dl>
+          <p><code>blocksPerGrid</code> 可由 input element 数 <code>N</code> 和 <code>threadsPerBlock</code> 计算。常见 ceiling division 写法是令 <code>blocksPerGrid</code> 等于 <code>(N + threadsPerBlock - 1) / threadsPerBlock</code>，使 N 不是 block size 整数倍时仍有 thread 覆盖最后一批元素。该公式要求正的 <code>threadsPerBlock</code>、足够宽且不会在加法中溢出的 integer type，并且结果不超过目标 device 的 grid limit；若 <code>N</code> 为 0，通常应跳过 kernel launch。示例代码如下：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="c1">//-------------------------------------------------------</code>
+<code class="c1">// Kernel: myKernel running on the device (GPU)</code>
+<code class="c1">//   - input : device pointer to float array of length N</code>
+<code class="c1">//   - N   : total number of elements in the input</code>
+<code class="c1">//-------------------------------------------------------</code>
+<code class="n">__global__</code><code class="w"> </code><code class="kt">void</code><code class="w"> </code><code class="n">myKernel</code><code class="p">(</code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">input</code><code class="p">,</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="c1">// Compute a unique global thread index</code>
+<code class="w">    </code><code class="kt">int</code><code class="w"> </code><code class="n">idx</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">blockIdx</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="n">blockDim</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadIdx</code><code class="p">.</code><code class="n">x</code><code class="p">;</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Only process valid elements</code>
+<code class="w">    </code><code class="k">if</code><code class="w"> </code><code class="p">(</code><code class="n">idx</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="n">input</code><code class="p">[</code><code class="n">idx</code><code class="p">]</code><code class="w"> </code><code class="o">*=</code><code class="w"> </code><code class="mf">2.0f</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+<code class="p">}</code><code class="w"/>
+
+<code class="c1">// This code runs on the host (CPU)</code>
+<code class="kt">int</code><code class="w"> </code><code class="n">main</code><code class="p">()</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="c1">// 1) Problem size: one million floats</code>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">1'000'000</code><code class="p">;</code><code class="w"/>
+
+<code class="w">    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_input</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Initialize host data (for example, all ones)</code>
+<code class="w">    </code><code class="k">for</code><code class="w"> </code><code class="p">(</code><code class="kt">int</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">;</code><code class="w"> </code><code class="o">++</code><code class="n">i</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="n">h_input</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mf">1.0f</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Allocate device memory for input on the device (d_)</code>
+<code class="w">    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">d_input</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMalloc</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Copy data from the host to the device using cudaMemcpyHostToDevice </code>
+<code class="w">    </code><code class="n">cudaMemcpy</code><code class="p">(</code><code class="n">d_input</code><code class="p">,</code><code class="w"> </code><code class="n">h_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code>
+<code class="w">      </code><code class="n">cudaMemcpyHostToDevice</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 2) Tune launch parameters</code>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">threadsPerBlock</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">256</code><code class="p">;</code><code class="w"> </code><code class="c1">// multiple of 32</code>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">blocksPerGrid</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="p">(</code><code class="n">N</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadsPerBlock</code><code class="w"> </code><code class="o">-</code><code class="w"> </code><code class="mi">1</code><code class="p">)</code><code class="w"> </code><code class="o">/</code><code class="w"> </code>
+<code class="w">      </code><code class="n">threadsPerBlock</code><code class="p">;</code><code class="w"> </code><code class="c1">// 3,907, in this case</code>
+
+<code class="w">    </code><code class="c1">// Launch myKernel across blocksPerGrid number of blocks</code>
+<code class="w">    </code><code class="c1">// Each block has threadsPerBlock number of threads</code>
+<code class="w">    </code><code class="c1">// Pass a reference to the d_input device array</code>
+<code class="w">    </code><code class="n">myKernel</code><code class="o">&lt;&lt;&lt;</code><code class="n">blocksPerGrid</code><code class="p">,</code><code class="w"> </code><code class="n">threadsPerBlock</code><code class="o">&gt;&gt;&gt;</code><code class="p">(</code><code class="n">d_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="c1">// Wait for the kernel to finish running on the device</code>
+<code class="w">    </code><code class="n">cudaDeviceSynchronize</code><code class="p">();</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// When finished, copy results (stored in d_input) from device to host </code>
+<code class="w">    </code><code class="c1">// (stored in h_input) using cudaMemcpyDeviceToHost</code>
+<code class="w">    </code><code class="n">cudaMemcpy</code><code class="p">(</code><code class="n">h_input</code><code class="p">,</code><code class="w"> </code><code class="n">d_input</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">cudaMemcpyDeviceToHost</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Cleanup: Free memory on the device and host</code>
+<code class="w">    </code><code class="n">cudaFree</code><code class="p">(</code><code class="n">d_input</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_input</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="k">return</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="c1">// return 0 for success!</code></pre>
+          <p>该 kernel 与前例相同，但会根据 <code>N</code> 的大小计算 <code>blocksPerGrid </code>和 <code>threadsPerBlock</code>。熟悉的 <code>if (idx &lt; N)</code> bounds check 让最后一个 block 中 index 超出 <code>N</code> 的 lane 跳过 memory access，从而避免本例中的越界访问。接下来讨论 image 和 volume 等 2D/3D input。<a contenteditable="false" data-primary="" data-startref="ch6lau" data-type="indexterm" id="id2163"/><a contenteditable="false" data-primary="" data-startref="ch6lau2" data-type="indexterm" id="id2164"/><a contenteditable="false" data-primary="" data-startref="ch6lau3" data-type="indexterm" id="id2165"/><a contenteditable="false" data-primary="" data-startref="ch6lau4" data-type="indexterm" id="id2166"/><a contenteditable="false" data-primary="" data-startref="ch6lau5" data-type="indexterm" id="id2167"/><a contenteditable="false" data-primary="" data-startref="ch6lau6" data-type="indexterm" id="id2168"/><a contenteditable="false" data-primary="" data-startref="ch6lau7" data-type="indexterm" id="id2169"/><a contenteditable="false" data-primary="" data-startref="ch6lau8" data-type="indexterm" id="id2170"/></p>
+        </div></section>
+        <section data-pdf-bookmark="2D and 3D Kernel Inputs" data-type="sect2"><div class="sect2" id="ch06_section_2d_and_3d_kernel_inputs_1757308039143612">
+          <h2>2D 与 3D kernel input</h2>
+          <p>当 input data 具有自然的二维逻辑结构时，<a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="kernel inputs in 2D and 3D" data-type="indexterm" id="id2171"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="kernel inputs in 2D and 3D" data-type="indexterm" id="id2172"/>例如 image，可以启动由 2D block 组成的 2D grid。下面的 kernel 用 16 × 16、共 256 个 thread 的 block 处理一个逻辑尺寸为 1,024 × 1,024 的 matrix。底层 allocation 仍是线性 float buffer，kernel 显式将二维坐标转换为 row-major linear index：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="c1">// 2d_kernel.cu</code>
+
+<code class="cp">#include</code><code class="w"> </code><code class="cpf">&lt;cuda_runtime.h&gt;</code><code class="cp"/>
+<code class="cp">#include</code><code class="w"> </code><code class="cpf">&lt;iostream&gt;</code><code class="cp"/>
+
+<code class="c1">//-------------------------------------------------------</code>
+<code class="c1">// Kernel: my2DKernel running on the device (GPU)</code>
+<code class="c1">//   - input  : device pointer to float array of size width×height</code>
+<code class="c1">//   - width  : number of columns</code>
+<code class="c1">//   - height : number of rows</code>
+<code class="c1">//-------------------------------------------------------</code>
+<code class="n">__global__</code><code class="w"> </code><code class="kt">void</code><code class="w"> </code><code class="n">my2DKernel</code><code class="p">(</code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">input</code><code class="p">,</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">width</code><code class="p">,</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">height</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="c1">// Compute 2D thread coordinates</code>
+<code class="w">    </code><code class="kt">int</code><code class="w"> </code><code class="n">x</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">blockIdx</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="n">blockDim</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadIdx</code><code class="p">.</code><code class="n">x</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="kt">int</code><code class="w"> </code><code class="n">y</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">blockIdx</code><code class="p">.</code><code class="n">y</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="n">blockDim</code><code class="p">.</code><code class="n">y</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadIdx</code><code class="p">.</code><code class="n">y</code><code class="p">;</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Only process valid pixels</code>
+<code class="w">    </code><code class="k">if</code><code class="w"> </code><code class="p">(</code><code class="n">x</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">width</code><code class="w"> </code><code class="o">&amp;&amp;</code><code class="w"> </code><code class="n">y</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">height</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="kt">int</code><code class="w"> </code><code class="n">idx</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">y</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="n">width</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">x</code><code class="p">;</code><code class="w"/>
+<code class="w">        </code><code class="n">input</code><code class="p">[</code><code class="n">idx</code><code class="p">]</code><code class="w"> </code><code class="o">*=</code><code class="w"> </code><code class="mf">2.0f</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+<code class="p">}</code><code class="w"/>
+
+<code class="kt">int</code><code class="w"> </code><code class="n">main</code><code class="p">()</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="c1">// Image dimensions</code>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">width</code><code class="w">  </code><code class="o">=</code><code class="w"> </code><code class="mi">1024</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">height</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">1024</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="w">      </code><code class="o">=</code><code class="w"> </code><code class="n">width</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="n">height</code><code class="p">;</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 1) Allocate and initialize host image</code>
+<code class="w">    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_image</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_image</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+
+<code class="w">    </code><code class="k">for</code><code class="w"> </code><code class="p">(</code><code class="kt">int</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">;</code><code class="w"> </code><code class="o">++</code><code class="n">i</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="n">h_image</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mf">1.0f</code><code class="p">;</code><code class="w">  </code><code class="c1">// e.g., initialize all pixels to 1.0f </code>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 2) Allocate device image and copy data to device</code>
+<code class="w">    </code><code class="n">cudaStream_t</code><code class="w"> </code><code class="n">s</code><code class="p">;</code><code class="w"> </code><code class="n">cudaStreamCreateWithFlags</code><code class="p">(</code><code class="o">&amp;</code><code class="n">s</code><code class="p">,</code><code class="w"> </code><code class="n">cudaStreamNonBlocking</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">d_image</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMallocAsync</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_image</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMemcpyAsync</code><code class="p">(</code><code class="n">d_image</code><code class="p">,</code><code class="w"> </code><code class="n">h_image</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code>
+<code class="w">                    </code><code class="n">cudaMemcpyHostToDevice</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 3) Configure and launch the 2D kernel</code>
+<code class="w">    </code><code class="n">dim3</code><code class="w"> </code><code class="nf">threadsPerBlock2D</code><code class="p">(</code><code class="mi">16</code><code class="p">,</code><code class="w"> </code><code class="mi">16</code><code class="p">);</code><code class="w"> </code><code class="c1">// 256 threads per block</code>
+<code class="w">    </code><code class="n">dim3</code><code class="w"> </code><code class="n">blocksPerGrid2D</code><code class="p">((</code><code class="n">width</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadsPerBlock2D</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">-</code><code class="w"> </code><code class="mi">1</code><code class="p">)</code><code class="w"> </code>
+<code class="w">                          </code><code class="o">/</code><code class="w"> </code><code class="n">threadsPerBlock2D</code><code class="p">.</code><code class="n">x</code><code class="p">,</code><code class="w"/>
+<code class="w">                         </code><code class="p">(</code><code class="n">height</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadsPerBlock2D</code><code class="p">.</code><code class="n">y</code><code class="w"> </code><code class="o">-</code><code class="w"> </code><code class="mi">1</code><code class="p">)</code><code class="w"> </code>
+<code class="w">                          </code><code class="o">/</code><code class="w"> </code><code class="n">threadsPerBlock2D</code><code class="p">.</code><code class="n">y</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// 4) Launch the kernel</code>
+<code class="w">    </code><code class="n">my2DKernel</code><code class="o">&lt;&lt;&lt;</code><code class="n">blocksPerGrid2D</code><code class="p">,</code><code class="w"> </code><code class="n">threadsPerBlock2D</code><code class="p">,</code><code class="w"/>
+<code class="w">                 </code><code class="mi">0</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="o">&gt;&gt;&gt;</code><code class="p">(</code><code class="n">d_image</code><code class="p">,</code><code class="w"> </code><code class="n">width</code><code class="p">,</code><code class="w"> </code><code class="n">height</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="n">cudaMemcpyAsync</code><code class="p">(</code><code class="n">h_image</code><code class="p">,</code><code class="w"> </code><code class="n">d_image</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code>
+<code class="w">                    </code><code class="n">cudaMemcpyDeviceToHost</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaStreamSynchronize</code><code class="p">(</code><code class="n">s</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="n">cudaFreeAsync</code><code class="p">(</code><code class="n">d_image</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaStreamDestroy</code><code class="p">(</code><code class="n">s</code><code class="p">);</code><code class="w"/></pre>
+
+          <p>以上仍给出了完整的 device kernel 和 host invocation code。可以为 <code>blocksPerGrid</code> 与 <code>threadsPerBlock</code> 使用 <code>dim3(x, y, z)</code>，把 logical thread coordinate 推广到 3D；但 volumetric data 的实际地址仍需根据 width、height、depth 及 layout/stride 显式计算。使用 pitched allocation 时还必须按 pitch/slice pitch 寻址，并确保 dimension product 和 linear index 不发生 integer overflow。</p>
+          <div data-type="tip">
+            <p>本书大多<a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="kernel inputs in 1D" data-type="indexterm" id="id2173"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="kernel inputs in 1D" data-type="indexterm" id="id2174"/>为 <code>blocksPerGrid</code> 和 <code>threadsPerBlock</code> 使用 1D 或 2D tiled configuration。一维情况下，<code>blocksPerGrid</code> 和 <code>threadsPerBlock</code> 可以传入 scalar-like integer，CUDA 会将其转换为 x 维相应、y/z 维为 1 的 <code>dim3</code>。示例清单应补充 CUDA error checking，并在结束前调用 cudaFreeHost(h_image) 释放 pinned host allocation。</p>
+          </div>
+        </div></section>
+        <section data-pdf-bookmark="Asynchronous Memory Allocation and Memory Pools" data-type="sect2"><div class="sect2" id="ch06_asynchronous_memory_allocation_and_memory_pools_1757308039143661">
+          <h2>异步内存分配与 memory pool</h2>
+          <p>前例使用的传统 <code>cudaMalloc</code>/<code>cudaFree</code><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="asynchronous memory allocation" data-type="indexterm" id="ch6asme"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="asynchronous memory allocation" data-type="indexterm" id="ch6asme2"/><a contenteditable="false" data-primary="memory" data-secondary="programming CUDA" data-tertiary="asynchronous memory allocation" data-type="indexterm" id="ch6asme3"/> 是 host-side allocation API，调用成本可能较高，并可能引入 device synchronization 或 driver/OS memory-management work。原文以 <code>mmap</code>/<code>ioctl</code> 概括内部实现只是示意；具体系统调用、缓存与同步行为依 CUDA、driver 和平台而定。</p>
+          <p>driver 与 OS interaction 可能产生 kernel-space transition 和管理开销，因此频繁细粒度 allocation 往往代价明显。对于生命周期可按 stream 排序、且平台支持的 workload，可考虑 <code>cudaMallocAsync</code> 和 <code>cudaFreeAsync</code>；它们通过 pool 与 stream-ordering 减少重复分配和全局同步，但并非所有一次性或低频 allocation 都一定更快。</p>
+          <p>CUDA runtime 为支持的 device 维护<a contenteditable="false" data-primary="memory" data-secondary="programming CUDA" data-tertiary="memory pools" data-type="indexterm" id="ch6mepo"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="memory pools" data-type="indexterm" id="ch6mepo2"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="memory pools" data-type="indexterm" id="ch6mepo3"/>默认 per-device memory pool，也可创建和设置显式 pool。stream-ordered free 完成后，allocation 可回到相应 pool 供后续兼容 allocation 复用。<code>cudaMallocAsync</code> 与 <code>cudaFreeAsync</code> 使用这种 memory-pool mechanism。</p>
+          <p>memory pool 可复用已释放的 memory block，减少向底层 allocator 重复申请和归还 memory 的次数。在长期 training loop 等重复 allocation pattern 中，这通常降低 allocation latency，并可能缓解某些 external fragmentation；但 pool 自身会保留 reserved memory，也可能出现 size-class/internal fragmentation。许多高性能 library/runtime（包括 PyTorch）都采用 caching 或 pooling allocator。</p>
+          <p>PyTorch 使用自定义<a contenteditable="false" data-primary="PyTorch" data-secondary="memory caching allocator" data-type="indexterm" id="id2175"/> CUDA caching allocator，可通过 <code>PYTORCH_ALLOC_CONF</code> 配置（旧别名为 <code>PYTORCH_CUDA_ALLOC_CONF</code>）。其思想与 CUDA memory pool 相似：复用 GPU allocation，避免每次创建 tensor 都直接调用 <code>cudaMalloc</code>。具体 backend 可随 PyTorch version/configuration 改变，选项也不能在不同 backend 之间一概而论。</p>
+          <p>对于频繁、细粒度 allocation，pool-based <code>cudaMallocAsync</code> 与 <code>cudaFreeAsync</code> 通常比反复使用传统 <code>cudaMalloc</code>/<code>cudaFree</code> 更适合，因为 allocation/free 可按 stream 排序并复用 pool。收益取决于 allocation pattern、pool state 和 synchronization，不应假定每次传统调用都必然执行相同的 full-device synchronization 或 OS call。<a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="CUDA streams" data-type="indexterm" id="id2176"/><a contenteditable="false" data-primary="memory" data-secondary="programming CUDA" data-tertiary="CUDA streams" data-type="indexterm" id="id2177"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="CUDA streams" data-type="indexterm" id="id2178"/>下面创建一个 nonblocking stream：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="n">cudaStream_t</code><code class="w"> </code><code class="n">stream1</code><code class="p">;</code><code class="w"/>
+<code class="n">cudaStreamCreateWithFlags</code><code class="p">(</code><code class="o">&amp;</code><code class="n">stream1</code><code class="p">,</code><code class="w"> </code><code class="n">cudaStreamNonBlocking</code><code class="p">);</code><code class="w"/></pre>
+          <div data-type="tip">
+            <p>explicit CUDA stream 可表达 operation ordering，并在 hardware capability、dependency、memory 和 copy-engine 条件允许时重叠 transfer、kernel 与 allocation。stream 不是完全隔离的 channel：它们共享 device resource，并可通过 event/dependency、memory hazard 和 default-stream semantics 交互。使用 <code>cudaStreamCreateWithFlags(..., cudaStreamNonBlocking)</code> 可避免与 legacy default stream 的隐式同步关系，但不会自动产生 overlap。第 <a data-type="xref" href="ch11.html#ch11_inter_kernel_pipelining_synchronization_and_cuda_1757308065280308">11 章</a>将详细讨论 multistream overlap。</p>
+          </div>
+          <p>需要容纳 <code>N</code> 个 float 的 buffer 时，可在同一 stream 上用 <code>cudaMallocAsync</code> 分配，并在最后一次使用之后 enqueue <code>cudaFreeAsync</code>，如下所示：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">d_buf</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="n">cudaMallocAsync</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_buf</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">stream1</code><code class="p">);</code><code class="w"/>
+
+<code class="c1">// ... launch kernels into stream1 that use d_buf ...</code>
+<code class="n">myKernel</code><code class="o">&lt;&lt;&lt;</code><code class="n">blocksPerGrid</code><code class="p">,</code><code class="w"> </code><code class="n">threadsPerBlock</code><code class="p">,</code><code class="w"> </code><code class="mi">0</code><code class="p">,</code><code class="w"> </code><code class="n">stream1</code><code class="o">&gt;&gt;&gt;</code><code class="p">(</code><code class="n">d_buf</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="p">);</code><code class="w"/>
+
+<code class="c1">// Free is deferred until all work in stream1 completes—</code>
+<code class="n">cudaFreeAsync</code><code class="p">(</code><code class="n">d_buf</code><code class="p">,</code><code class="w"> </code><code class="n">stream1</code><code class="p">);</code><code class="w"/></pre>
+          <p>这些 API 从 per-device memory pool 分配，并遵循传入 stream 的 ordering；free operation 只有在该 stream 中此前使用完成后才生效。<code>cudaFreeAsync</code> 本身是 enqueue，不是在 host 上等待 <code>stream1</code> 完成，也不隐式执行全局 <code>cudaDeviceSynchronize</code>。如果 pointer 会在其他 stream 使用，应用必须建立正确的 cross-stream dependency；否则同一 stream 的顺序不足以保证 lifetime。对于大量 allocate/free cycle，pool reuse 可降低 allocation overhead 和 latency variance，并减少某些全局同步；相对传统 <code>cudaMalloc</code>/<code>cudaFree</code> 的实际收益和 fragmentation 仍需测量。</p>
+          <p>还可调整 device memory pool 的行为。例如，<code>cudaMemPoolAttrReleaseThreshold</code> 控制 pool 在 synchronization opportunity 后尝试向 OS 释放 reserved memory 时使用的阈值；它不是严格的 memory cap。也可调用 <code>cudaMemPoolTrimTo</code> 请求把 reserved memory 缩减到给定目标附近。二者用于权衡 retained footprint、后续 allocation latency 和复用机会，而不是直接消除 fragmentation。</p>
+          <p class="fix_tracking">对于简单的一次性 buffer，传统 <code>cudaMalloc </code>和 <code>cudaFree</code> 可能已经足够。对于长期循环中的重复 allocation/free，可评估在适当 stream 上使用 <code>cudaMallocAsync </code>和 <code>cudaFreeAsync</code> 及其 pool；它通常降低 allocator overhead，但一致性和 throughput 改善取决于 workload 与 pool policy。</p>
+          <p>在合适的 stream/lifetime model 下，<code>cudaMallocAsync </code>与 <code>cudaFreeAsync</code> 可以利用 pool 减少重复管理开销。可通过 <code>cudaMemPoolSetAttribute</code> 调整 pool behavior，例如设置 <code>cudaMemPoolAttrReleaseThreshold</code>，以便<em>在 retained memory footprint、allocation latency 与复用率之间选择经测量的工作点，而不是假定某一阈值同时最小化 footprint 和 fragmentation。</em><a contenteditable="false" data-primary="" data-startref="ch6asme" data-type="indexterm" id="id2179"/><a contenteditable="false" data-primary="" data-startref="ch6asme2" data-type="indexterm" id="id2180"/><a contenteditable="false" data-primary="" data-startref="ch6asme3" data-type="indexterm" id="id2181"/><a contenteditable="false" data-primary="" data-startref="ch6mepo" data-type="indexterm" id="id2182"/><a contenteditable="false" data-primary="" data-startref="ch6mepo2" data-type="indexterm" id="id2183"/><a contenteditable="false" data-primary="" data-startref="ch6mepo3" data-type="indexterm" id="id2184"/></p>
+        </div></section>
+        <section data-pdf-bookmark="Understanding GPU Memory Hierarchy" data-type="sect2"><div class="sect2" id="ch06_understanding_gpu_memory_hierarchy_1757308039143715">
+          <h2>理解 GPU memory hierarchy</h2>
+          <p>到目前为止，我们主要从高层讨论<a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="GPU memory hierarchy" data-type="indexterm" id="ch6hier"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="GPU memory hierarchy" data-type="indexterm" id="ch6hier2"/><a contenteditable="false" data-primary="memory" data-secondary="programming CUDA" data-tertiary="GPU memory hierarchy" data-type="indexterm" id="ch6hier3"/><a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="memory hierarchy" data-type="indexterm" id="ch6hier4"/><a contenteditable="false" data-primary="architecture of GPUs" data-secondary="memory hierarchy" data-type="indexterm" id="ch6hier5"/><a contenteditable="false" data-primary="GPUs" data-secondary="programming CUDA" data-tertiary="memory hierarchy" data-type="indexterm" id="ch6hier6"/><a contenteditable="false" data-primary="global memory" data-primary-sortas="global memory" data-secondary="GPU memory hierarchy" data-type="indexterm" id="ch6hier7"/> global-memory allocation。stream-ordered allocation 可来自目标 device 的 current/default memory pool；memory pool 属于 device/allocator 作用域，并不存在一个专属于“default stream 0”的独立 memory pool。</p>
+          <p>GPU 实际提供多级 memory hierarchy，以不同 capacity、latency、bandwidth 和作用域支持数据访问，包括 register、shared memory、cache、global memory，以及 Blackwell 上特定 Tensor Core path 使用的 TMEM。TMEM 是每 SM 约 256 KB 的 dedicated on-chip tensor memory，供第 5 代 Tensor Core instruction（<code>tcgen05.*</code>）保存 accumulator 等数据；普通 CUDA C++ 不能像 global/shared memory 那样用通用 pointer 直接寻址。TMA 主要负责 global memory 与 SMEM 之间的 multidimensional async transfer，而 TMEM 的分配、访问和 SMEM/TMEM movement 由相应 tcgen05 instruction 与 descriptor/control operand 管理；原文括号也缺少右括号。</p>
+          <p>global memory（通常为 HBM/DRAM）容量大、位于 chip 外，相对 on-chip storage 延迟更高；register 容量很小、位于 SM 上，通常具有最低访问延迟。L1、L2 与 shared memory 在 scope、capacity 和 access mechanism 上各不相同，不能简单视为一条统一的中间层级。cache 可利用 locality 减少下层访问，shared memory 则由程序显式管理以实现 reuse/cooperation；它们可降低 exposed global-memory latency 和 traffic，但不会自动“隐藏”所有延迟。图 <a data-type="xref" href="#ch06_figure_10_1757308039123673">6-10</a> 给出包含 CPU 的高层示意。</p>
+          <figure><div class="figure" id="ch06_figure_10_1757308039123673">
+            <img alt="GPU 内存层级示意图，展示 CPU 主机内存、DRAM、L1/L2 缓存与流式多处理器（SM）内共享内存的关系，以及 NVLINK 和 PCIe 连接。" src="assets/aisp_0610.png"/>
+            <h6><span class="label">图 6-10. </span>包含 CPU 的 GPU memory hierarchy</h6>
+          </div></figure>
+          <p>TMEM 是 Blackwell 上每 SM 约 256 KB、与特定 Tensor Core instruction 紧密耦合的 storage。原书给出其与 Tensor Core 之间为每秒数十 TB 的内部带宽口径，但该数值依 instruction、数据布局和统计口径，不能等同于 application 可持续带宽。TMEM 可让 accumulator 等中间值留在片上，减少部分 SMEM/register/global-memory traffic；它不透明地替代整个 global-memory data path。图 <a data-type="xref" href="#ch06_figure_11_1757308039123694">6-11</a> 示意 TMEM 与 SMEM 配合 Tensor Core 计算 C = A × B。</p>
+          <figure><div class="figure" id="ch06_figure_11_1757308039123694">
+            <img alt="展示执行矩阵乘法 C = A × B 时 TMEM、SMEM、寄存器和 Tensor Cores 之间交互的示意图。" src="assets/aisp_0611.png"/>
+            <h6><span class="label">图 6-11. </span>TMEM 与 SMEM 为 C = A × B matrix <span class="keep-together">multiply</span> 提供数据</h6>
+          </div></figure>
+          <p>图中把 operand B 画为来自 SMEM，并把 A/accumulator 画在 TMEM；这只是简化示意。对 Blackwell tcgen05 MMA 而言，operand source、descriptor 和 TMEM accumulator layout 取决于具体 instruction form，不能普遍断言 A 预先存于 TMEM。tile 可由 TMA 从 global memory 经 memory hierarchy 搬到 SMEM；高级 API 可使用 <code>cuda::memcpy_async</code> 等抽象，但它与底层 TMA 的映射取决于 architecture、shape、alignment 和 compiler。随后由 UMMA/<code>tcgen05.mma</code> 及相关 data-movement instruction 使用 SMEM/TMEM 数据。</p>
+          
+          
+          
+          <p><a data-type="xref" href="#ch06_table_5_1757308039130169">表 6-5</a> 汇总原书给出的 Blackwell memory level 与特征。capacity 中部分是 architecture/device limit，latency/bandwidth 多为近似值或 microbenchmark 口径，会随 SKU、clock、instruction、access pattern、cache state 和 contention 改变，不能视为 CUDA contract。后文再逐层说明。</p>
+          <table id="ch06_table_5_1757308039130169">
+            <caption><span class="label">表 6-5. </span>Blackwell memory hierarchy 与特征</caption>
+            <thead>
+              <tr>
+                <th>层级</th>
+                <th>作用域</th>
+                <th>容量</th>
+                <th>延迟</th>
+                <th>带宽（近似）</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  register
+                </td>
+                <td>per thread，物理 register file 位于 SM</td>
+                <td>每 SM 64 K 个 32-bit register（每 thread architecture limit 为 255）</td>
+                <td>最低层级延迟<br/>（dependency、bank/port conflict 和 instruction scheduling 仍可能产生等待，不能视为“免费”）</td>
+                <td>每 SM 数十 TB/s 量级（register-file port 的理论/推导口径）</td>
+              </tr>
+              <tr>
+                <td>
+                  shared memory 与 L1 cache
+                </td>
+                <td>per SM</td>
+                <td>原书列约 228 KB shared（单 block 约 227 KB usable），与 L1/data cache 共享/配置的 SRAM 口径依 device</td>
+                <td>约 20–30 cycle（特定 L1/shared microbenchmark）</td>
+                <td>每 SM TB/s 量级（bank-conflict-free 的特定访问）</td>
+              </tr>
+              <tr>
+                <td>
+                  TMEM
+                </td>
+                <td>per SM</td>
+                <td>每 SM 约 256 KB，供特定 Tensor Core path 使用</td>
+                <td>原书列约 10 cycle（非通用 CUDA load/store latency）</td>
+                <td>与 Tensor Core 通信为 TB/s 量级（依 instruction/口径）</td>
+              </tr>
+              <tr>
+                <td>
+                  constant-memory cache
+                </td>
+                <td>per SM cache；constant address space 为 device scope</td>
+                <td>原书列约 8 KB cache，对应 64 KB <code>__constant__</code> address space</td>
+                <td>同一 warp 访问同一 cached address 时支持 broadcast；“约 1 cycle/等同 register”不是通用保证<br/>不同 address 通常按 distinct address 数序列化<br/>cache miss 则访问下层 memory，并产生更高 latency</td>
+                <td>broadcast pattern 下可达高 throughput；依 cache/access pattern</td>
+              </tr>
+              <tr>
+                <td>
+                  L2 cache
+                </td>
+                <td>device-wide，供所有 SM 共享</td>
+                <td>原书列总计 126 MB；依具体 SKU</td>
+                <td>原书列约 200 cycle；依 hit path、clock 与 contention</td>
+                <td>aggregate multi-TB/s 量级；依访问与 SKU</td>
+              </tr>
+              <tr>
+                <td>
+                  local memory
+                </td>
+                <td>per-thread address space；物理存储位于 device memory，可由 cache 服务</td>
+                <td>受 address-space、allocation 与 device-memory capacity 限制，并非 near-unlimited</td>
+                <td>cache hit 到 DRAM miss 的跨度很大；原书列数百至约 1,000 cycle</td>
+                <td>受 cache/HBM traffic 与 coalescing 限制，不能直接等同 HBM peak</td>
+              </tr>
+              <tr>
+                <td>
+                  global memory（HBM/DRAM）
+                </td>
+                <td>设备范围的片外内存</td>
+                <td>原书列 Blackwell B200 每 GPU 最多约 180 GB 可用口径
+（Blackwell B300 每 GPU 最多约 288 GB）</td>
+                <td>数百至约 1,000 cycle 的经验范围；依 cache miss、queueing 和 clock</td>
+                <td>原书列总计约 8 TB/s；具体 B200/B300 SKU 与口径不同</td>
+              </tr>
+            </tbody>
+            
+          </table>
+          <p>因此，高 throughput kernel 通常要利用 register/shared memory/cache 中的数据 reuse，减少不必要的 off-chip traffic，并保持访问合并和足够并发度。但 register/shared-memory 使用过多会降低 occupancy，cache 由硬件管理且 hit rate 依 workload，local memory 也可能命中 cache；目标不是无条件“最小化”某一层，而是优化 end-to-end data movement。下面逐层展开说明：</p>
+          <dl>
+            <dt>寄存器（register）</dt>
+            <dd>
+              <p>在 Blackwell 上，每个 SM 的 register file 包含 64 K 个 32-bit register（合计 256 KB），用于保存各 resident thread 的 scalar value、address 和 compiler temporary；architecture limit 为每 thread 最多 255 个 register。register 是 SM 上的低延迟资源，但实际 allocation 以 warp/CTA 等粒度取整，并由 compiler 与 launch constraint 共同决定。</p>
+              <p>register file 可提供很高 throughput，但 read/write 并非无条件单 cycle 或“几乎不争用”：dependency、bank/port conflict、operand delivery 和 instruction scheduling 都可能限制性能。当 compiler 无法把所有 live value 放入 register 时，部分值会 spill 到 local-memory address space；其物理 backing 位于 device memory，并可经过 L1/L2，因此 latency 从 cache hit 到 DRAM miss 差异很大，不必然每次都是数百至上千 cycle。图 <a data-type="xref" href="#ch06_figure_12_1757308039123709">6-12</a> 示意 per-thread local memory。</p>
+              <figure><div class="figure" id="ch06_figure_12_1757308039123709">
+            <img alt="展示线程与其对应每线程本地内存连接关系的示意图，强调寄存器超限时会溢出到本地内存。" src="assets/aisp_0612.png"/>
+                <h6><span class="label">图 6-12. </span>每 thread 的 local-memory address space</h6>
+              </div></figure>
+            </dd>
+            <dt>shared memory 与 L1 data cache</dt>
+            <dd>
+              <p>Blackwell 等 architecture 的 L1/texture/shared-memory path 使用每 SM 的 unified on-chip SRAM，原书列出总计 256 KB。应用可用 <code>cudaFuncSetAttribute()</code> 与 <code>cudaFuncAttributePreferredSharedMemoryCarveout</code> 表达 L1/shared carveout 偏好；这通常是 hint，不保证精确 partition。若 kernel 需要超过默认上限的 dynamic shared memory，则应另用对应的 max-dynamic-shared-memory opt-in attribute。原书给出每 SM shared-memory 上限约 228 KB、每 block dynamic shared memory 约 227 KB；实际值、保留量、static+dynamic 合计及 opt-in requirement 都应查询目标 device/function attribute。</p>
+              <p>原书给出约 20–30 cycle 和每 SM TB/s 量级的 microbenchmark 结果。shared-memory bank conflict、address pattern、instruction width 和 occupancy 会影响 throughput；L1 与 shared memory 的访问机制也不同，不能共用单一 latency 结论。图 <a data-type="xref" href="#ch06_figure_13_1757308039123723">6-13</a> 示意 block-scoped shared memory；其 allocation 随 block residency 占用 SM SRAM，并非永久专属于某个 block 的独立物理存储。</p>
+              <figure><div class="figure" id="ch06_figure_13_1757308039123723">
+            <img alt="展示线程块与其专用每线程块共享内存之间关系的示意图。" src="assets/aisp_0613.png"/>
+                <h6><span class="label">图 6-13. </span>thread-block scoped shared memory</h6>
+              </div></figure>
+            </dd>
+            <dt>TMEM</dt>
+            <dd>
+              <p>TMEM 是 Blackwell 每 SM 约 256 KB 的 dedicated on-chip tensor memory，供 UMMA 与 <code>tcgen05</code> 等 Tensor Core-specific instruction 使用，第 <a data-type="xref" href="ch10.html#ch10_intra_kernel_pipelining_warp_specialization_and_1757308054839290">10 章</a>还会讨论。它不是普通 CUDA C++ pointer-addressable space，而是通过 tcgen05 allocation、load/store/copy 与 MMA instruction 管理。TMA descriptor 主要描述 global↔SMEM transfer，并不会自动管理 global、shared、TMEM 之间的全部数据流。典型 path 可让部分 operand 位于 shared memory、让 <span class="keep-together">accumulator</span> 位于 TMEM，但开发者/library/compiler 仍须明确安排 descriptor、barrier、lifetime 和相应 <span class="keep-together">computation</span>。</p>
+            </dd>
+            <dt>常量内存缓存</dt>
+            <dd>
+              <p>对于小型 read-only table，原书列出 Blackwell 每 SM 约 8 KB 的 constant cache，用于缓存 64 KB <code>__constant__</code> address space。当一个 warp 的 active lane 读取同一 address 时，constant path 可 broadcast 该值；具体 latency 依 cache hit 和 architecture，不应保证为 single cycle。</p>
+              <p>若同一 warp 读取多个不同 constant address，request 通常按 distinct address 数拆分/序列化。constant memory 可适合小型 lookup table，例如 rotary positional encoding parameter、Attention with Linear Biases（ALiBi）slope、部分 LayerNorm γ/β 或 quantization scale；但是否合适取决于容量和 access uniformity。cache hit 可减少下层 traffic，不能保证所有 thread 的所有访问都完全没有 global/L2 traffic。</p>
+            </dd>
+            <dt>L2 cache</dt>
+            <dd>
+              <p>L2 cache 位于 SM-local cache 与 off-chip HBM3e 之间，供 device 上各 SM 共享。原书为该 Blackwell configuration 列出 126 MB、约 200 cycle 和每秒数十 TB 的 aggregate bandwidth；这些均依 SKU、clock、partition、hit path 与 contention，不是固定值。</p>
+              <p>一个 block 取入 L2 的 data 有机会被其他 block 重用，从而避免再次访问 DRAM，但是否命中取决于 eviction、working set、access policy 和 scheduling。global access 应尽量让 warp lane 访问连续、对齐且可合并的数据；实际 memory transaction sector/cache-line 行为依 architecture 与 access width，不能把所有最佳访问固定为单个 128-byte transaction。</p>
+              <div data-type="tip">
+                <p>让 warp 的 global load/store 尽量连续、自然对齐并可 coalesce，可减少不必要的 sector/transaction；具体 alignment 和 transaction 数应按 element width、active lane 和目标 architecture 检查。128-byte aligned segment 是常见理想模式之一，但不保证完全避免 split，也不自动最大化 L2/DRAM <span class="keep-together">bandwidth</span>。</p>
+              </div>
+            </dd>
+            <dt>全局内存（HBM/DRAM）</dt>
+            <dd>
+              <p>global memory 的物理 backing 通常是 off-chip HBM/DRAM；local-memory object 和 register spill 也位于 device-memory backing，但访问可命中 L1/L2，不必每次承担完整 DRAM latency。原书给出的数百至上千 cycle 与约 8 TB/s <span class="keep-together">bandwidth</span> 分别是 latency 范围和特定产品 peak 口径，不能据 peak bandwidth 推断单次访问延迟。</p>
+              <p>原书为 Blackwell B200 列出每 GPU 最多约 180 GB 可用 HBM 和总计约 8 TB/s。具体 capacity/bandwidth 随 B200/B300 SKU 与计量口径不同；应用可达 bandwidth 还受 coalescing、read/write mix、cache、ECC 和 contention 影响。图 <a data-type="xref" href="#ch06_figure_14_1757308039123738">6-14</a> 示意 per-device global memory。</p>
+              <figure><div class="figure" id="ch06_figure_14_1757308039123738">
+            <img alt="展示内核 0 和内核 1 与每设备全局内存连接的示意图。" src="assets/aisp_0614.png"/>
+                <h6><span class="label">图 6-14. </span>per-device global memory（HBM）</h6>
+              </div></figure>
+            </dd>
+          </dl>
+          <p>可以使用 Nsight Compute 查看 register spill、memory transaction、cache hit rate、throughput 和 stall metric，以判断 kernel 的实际 data path。profiler 能帮助定位 register、shared/L1、constant cache、L2 与 HBM 的瓶颈，但接近某个 on-chip peak 并非普遍目标，metric 也需要结合 workload phase 和 counter definition 解读。Blackwell 的 L2 与 unified L1/shared SRAM 可支持 reuse 和显式 staging，而 coalescing 主要由 warp address pattern 决定。</p>
+          <div data-type="tip">
+            <p>Blackwell B200 对 CUDA 程序呈现为<a contenteditable="false" data-primary="B200 (NVIDIA Blackwell)" data-type="indexterm" id="id2185"/><a contenteditable="false" data-primary="NVIDIA Blackwell B200" data-type="indexterm" id="id2186"/><a contenteditable="false" data-primary="Blackwell GPU (NVIDIA)" data-secondary="Blackwell B200 GPU" data-type="indexterm" id="id2187"/><a contenteditable="false" data-primary="dual-die GPUs" data-secondary="programming" data-type="indexterm" id="id2188"/><a contenteditable="false" data-primary="Blackwell GPU (NVIDIA)" data-secondary="architecture" data-tertiary="B200" data-type="indexterm" id="id2189"/>单个 GPU 和统一 global address space，但物理上由两个 die 组成，原书列出 die 间约 10 TB/s interconnect，每个 die 连接四个 HBM3e stack。统一寻址和单 GPU programming model 不代表所有跨 die/HBM access 在 latency、bandwidth、contention 上完全 uniform；实际 locality 和 fabric behavior 应用 profiler/microbenchmark 验证。</p>
+          </div>
+          <p>memory visibility 与 ordering 的有效 scope<a contenteditable="false" data-primary="point of coherency (PoC)" data-type="indexterm" id="id2190"/><a contenteditable="false" data-primary="PoC (point of coherency)" data-type="indexterm" id="id2191"/>取决于 memory space、cache/coherence domain、参与者和所用 synchronization primitive。CUDA 提供 thread、thread block（<em>CTA</em>）、受支持的 cluster（<em>CTA cluster</em>）、device 和 system 等 scope，但仅选择 scope 并不能建立 data race-free communication；还需正确的 atomic/fence/barrier 与 happens-before relationship。图 <a data-type="xref" href="#ch06_figure_15_1757308039123752">6-15</a> 给出这些 scope 的概念示意。</p>
+          <figure><div class="figure" id="ch06_figure_15_1757308039123752">
+            <img alt="展示 GPU 线程一致性作用域的示意图，突出五个层级：自身（线程）、块、集群、设备和系统。" src="assets/aisp_0615.png"/>
+            <h6><span class="label">图 6-15. </span>GPU thread 的 memory visibility/coherence scope</h6>
+          </div></figure>
+          <p>总之，应根据 access pattern、reuse、scope 和 synchronization 选择合适的 memory level，并用 profiler 验证。良好的 locality、合并访问、足够并发度和受控 resource pressure 可减少 exposed latency；但提高 occupancy 与最大化某层使用量并非独立目标，也不保证“fully leverage”硬件。下一节讨论 NVIDIA Unified Memory，并说明它与 Grace Hopper/Grace Blackwell 等 coherent CPU-GPU design 的关系。<a contenteditable="false" data-primary="" data-startref="ch6hier" data-type="indexterm" id="id2192"/><a contenteditable="false" data-primary="" data-startref="ch6hier2" data-type="indexterm" id="id2193"/><a contenteditable="false" data-primary="" data-startref="ch6hier3" data-type="indexterm" id="id2194"/><a contenteditable="false" data-primary="" data-startref="ch6hier4" data-type="indexterm" id="id2195"/><a contenteditable="false" data-primary="" data-startref="ch6hier5" data-type="indexterm" id="id2196"/><a contenteditable="false" data-primary="" data-startref="ch6hier6" data-type="indexterm" id="id2197"/><a contenteditable="false" data-primary="" data-startref="ch6hier7" data-type="indexterm" id="id2198"/></p>
+        </div></section>
+        <section data-pdf-bookmark="Unified Memory" data-type="sect2"><div class="sect2" id="ch06_unified_memory_1757308039143767">
+          <h2>Unified Memory（统一内存）</h2>
+          <p>Unified Memory（也称 CUDA Managed Memory）为 managed allocation 提供 CPU 与 GPU 可使用的统一虚拟地址，<a contenteditable="false" data-primary="CUDA Unified Memory" data-secondary="programming CUDA" data-type="indexterm" id="ch6unimem"/><a contenteditable="false" data-primary="memory" data-secondary="CUDA Unified Memory" data-tertiary="programming CUDA" data-type="indexterm" id="ch6unimem2"/><a contenteditable="false" data-primary="CUDA" data-secondary="Unified Memory" data-tertiary="programming CUDA" data-type="indexterm" id="ch6unimem3"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="Unified Memory" data-type="indexterm" id="ch6unimem4"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="Unified Memory" data-type="indexterm" id="ch6unimem5"/><a contenteditable="false" data-primary="CPU DRAM" data-secondary="CUDA Unified Memory" data-tertiary="programming CUDA" data-type="indexterm" id="ch6unimem6"/>从而减少手工维护 host/device buffer 和显式 <code>cudaMemcpy</code> 的需要。可访问性、page placement、migration 与 hardware coherence 能力依平台而异，不能把统一地址一概等同于所有 CPU/GPU access 的硬件 cache coherence。<code>cudaMallocManaged()</code> 创建的 page 可由 driver 按 access、advice 和 topology 迁移或远程访问，如图 <a data-type="xref" href="#ch06_figure_16_1757308039123767">6-16</a> 所示。</p>
+          
+          <p>Unified Memory 简化了编程，但 on-demand page fault、migration 或 remote access 可能引入难以从 source 直接看出的 latency 与 stall。例如 GPU 访问当前位于 CPU memory 的 managed page 时，driver 可 fault 并迁移 page，或在受支持平台按当前 policy 远程访问；传输互连可能是 PCIe、NVLink 或 NVLink-C2C，并非总是 NVLink-C2C。因此性能高度依赖 hardware topology、OS、driver、page size 和 access pattern。</p>
+          <p>在 PCIe 或较早的 discrete-GPU system 上，fault-driven migration 常因 fault handling、transfer granularity 和 interconnect bandwidth 而比预先安排的 bulk <code>cudaMemcpy</code> 更慢。Grace Hopper/Grace Blackwell 的 NVLink-C2C 提供最高约 900 GB/s 的双向聚合 coherency interconnect 口径，连接 Grace CPU memory subsystem 与 GPU HBM；CPU 侧不是原文所称 HBM。高互连带宽可降低 data movement 成本，但 page fault、placement 和 remote-access latency 仍与 device-native HBM access 不同。</p>
+          
+          <p class="fix_tracking2">kernel 执行期间的 managed-memory fault 会阻塞受影响的 access/warp，并可能通过 fault batching、dependency 和 migration 影响更大范围，但不必然让整个 GPU 完全停顿。可在已知下一使用位置时调用 <code>cudaMemPrefetchAsync()</code> 提前请求 placement，如图 <a data-type="xref" href="#ch06_figure_17_1757308039123781">6-17</a> 所示。</p>
+          <p>prefetch 向 driver 请求把指定 range 迁移到目标 location，并按给定 stream 排序；在 hardware/stream/dependency 允许时可以与其他工作 overlap。它并非保证在 kernel launch 前自动完成，调用方仍需建立正确 stream ordering。还可提供 memory advice，如下：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="n">cudaMemAdvise</code><code class="p">(</code><code class="n">ptr</code><code class="p">,</code><code class="w"> </code><code class="n">size</code><code class="p">,</code><code class="w"> </code><code class="n">cudaMemAdviseSetPreferredLocation</code><code class="p">,</code><code class="w"> </code><code class="n">gpuId</code><code class="p">);</code><code class="w"/>
+<code class="n">cudaMemAdvise</code><code class="p">(</code><code class="n">ptr</code><code class="p">,</code><code class="w"> </code><code class="n">size</code><code class="p">,</code><code class="w"> </code><code class="n">cudaMemAdviseSetReadMostly</code><code class="p">,</code><code class="w"> </code><code class="n">gpuId</code><code class="p">);</code><code class="w"/></pre>
+          <p><code>PreferredLocation</code> 对应 preferred-location advice，提示 allocation 通常应驻留的位置；<code>ReadMostly</code> 表示 data 大多被读取，driver 可在适用平台创建 read-only duplicate。它不是 const correctness 或禁止 write 的保证，write 可能使 replica invalid。图 <a data-type="xref" href="#ch06_figure_18_1757308039123803">6-18</a> 给出概念示意。</p>
+          <figure><div class="figure" id="ch06_figure_16_1757308039123767">
+            <img alt="展示统一内存中自动页面迁移的示意图，说明数据如何经由 NVLink-C2C 在 CPU 与 GPU 物理内存之间传输以改善性能。" src="assets/aisp_0616.png"/>
+            <h6><span class="label">图 6-16. </span>CPU-GPU Unified Memory 的自动 page migration</h6>
+          </div></figure>
+          <figure><div class="figure" id="ch06_figure_17_1757308039123781">
+            <img alt="展示使用 cudaMemPrefetchAsync() 将数据从 CPU 内存传输到 GPU 内存的示意图，突出异步内存预取可避免 GPU 停顿。" src="assets/aisp_0617.png"/>
+            <h6><span class="label">图 6-17. </span>使用 <span class="keep-together"><code>cudaMemPrefetchAsync()</code></span> 请求经 NVLink-C2C 从 CPU 向 GPU prefetch data</h6>
+          </div></figure>
+          <figure><div class="figure" id="ch06_figure_18_1757308039123803">
+            <img alt="展示将 cudaMemAdvise 与 cudaPreferredLocation 结合使用、设置 CPU 与 GPU 之间首选内存位置以优化的示意图。" src="assets/aisp_0618.png"/>
+            <h6><span class="label">图 6-18. </span>指定 preferred location，并用 <code>ReadMostly</code> 等 advice 描述预期访问模式</h6>
+          </div></figure>
+          <p>还可用以下 advice 告知 driver：另一个 GPU 将访问该 range，以便预先建立必要 mapping、减少首次访问开销；这不保证 page 永不迁移：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="n">cudaMemAdvise</code><code class="p">(</code><code class="n">ptr</code><code class="p">,</code><code class="w"> </code><code class="n">size</code><code class="p">,</code><code class="w"> </code><code class="n">cudaMemAdviseSetAccessedBy</code><code class="p">,</code><code class="w"> </code>
+<code class="w">   </code><code class="n">otherGpuId</code><code class="p">);</code><code class="w"/></pre>
+          <p>managed allocation 的 access 可能触发 page fault、mapping 或 migration，并产生额外 ordering/latency。对于支持 stream attachment 的 managed memory，可把 association 改为 single-stream，以声明只有指定 stream 会访问该 allocation；这是访问约束和 coherency optimization hint，不是通用的 migration-overlap primitive。调用如下：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="n">cudaStreamAttachMemAsync</code><code class="p">(</code><code class="n">stream</code><code class="p">,</code><code class="w"> </code><code class="n">ptr</code><code class="p">,</code><code class="w"> </code><code class="mi">0</code><code class="p">,</code><code class="w"> </code>
+<code class="w">    </code><code class="n">cudaMemAttachSingle</code><code class="p">);</code><code class="w"/></pre>
+          <p class="pagebreak-after">使用 cudaMemAttachSingle 后，应用承诺在 association 生效期间仅通过指定 stream 访问 memory；其他 stream/device 的并发访问可能违反 API contract，而不是被安全阻止。该调用按 stream 异步改变 association，但并不保证只有该 stream 能产生 fault、也不自动把 migration 与该 stream 工作 overlap，更不能笼统保证消除 cross-stream synchronization。</p>
+          <div class="less_space" data-type="tip">
+            <p>在 multi-GPU system 中，可按 topology 使用 <code>cudaMemcpyPeerAsync()</code> 显式复制，或把 managed range prefetch 到特定 device。prefetch 是 placement request，不等于永久 pin，也不存在适用于所有系统的“nearest NUMA-local GPU memory”自动选择；peer access、NVLink/PCIe route、memory capacity 和后续访问仍可能导致 remote access 或 migration。</p>
+          </div>
+          <p>总之，适当 prefetch 和 memory advice 可以减少 first-touch fault 与不期望的 migration，但不能保证消除大多数 stall。要取得效果，prefetch 必须覆盖正确 range/location、按 dependency 在使用前完成，并避免 CPU/GPU ping-pong；working set 超出 capacity、irregular access 或多 device 写共享仍可能产生 fault 和迁移。</p>
+          <p>主动 prefetch、合适 advice 与正确 stream association 有时能让 Unified Memory 接近手工 <code>cudaMemcpy</code> 的性能，同时保留统一地址的便利；这不是跨 workload/platform 的保证。应对比 end-to-end time、fault/migration counter、interconnect traffic、capacity pressure 和 correctness，再选择 managed memory、显式 copy 或混合方案。<a contenteditable="false" data-primary="" data-startref="ch6unimem" data-type="indexterm" id="id2199"/><a contenteditable="false" data-primary="" data-startref="ch6unimem2" data-type="indexterm" id="id2200"/><a contenteditable="false" data-primary="" data-startref="ch6unimem3" data-type="indexterm" id="id2201"/><a contenteditable="false" data-primary="" data-startref="ch6unimem4" data-type="indexterm" id="id2202"/><a contenteditable="false" data-primary="" data-startref="ch6unimem5" data-type="indexterm" id="id2203"/><a contenteditable="false" data-primary="" data-startref="ch6unimem6" data-type="indexterm" id="id2204"/></p>
+        </div></section>
+        <section data-pdf-bookmark="Maintaining High Occupancy and GPU Utilization" data-type="sect2"><div class="sect2" id="ch06_maintaining_high_occupancy_and_gpu_utilization_1757308039143825">
+          <h2>保持足够的 occupancy 与 GPU utilization</h2>
+          <p>GPU 可让多个 resident warp<a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="high occupancy and GPU utilization" data-type="indexterm" id="ch6high"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="high occupancy and GPU utilization" data-type="indexterm" id="ch6high2"/><a contenteditable="false" data-primary="high occupancy" data-secondary="programming CUDA" data-type="indexterm" id="ch6high3"/><a contenteditable="false" data-primary="SMs (streaming multiprocessors)" data-secondary="high occupancy" data-tertiary="programming CUDA" data-type="indexterm" id="ch6high4"/><a contenteditable="false" data-primary="GPUs" data-secondary="programming CUDA" data-type="indexterm" id="ch6high5"/><a contenteditable="false" data-primary="occupancy" data-secondary="high occupancy" data-tertiary="maintaining high occupancy" data-type="indexterm" id="ch6high6"/><a contenteditable="false" data-primary="high occupancy" data-secondary="maintaining high occupancy" data-type="indexterm" id="ch6high7"/><a contenteditable="false" data-primary="performance boosts" data-secondary="running many warps concurrently" data-type="indexterm" id="id2205"/><a contenteditable="false" data-primary="latency hiding" data-type="indexterm" id="id2206"/><a contenteditable="false" data-primary="occupancy" data-secondary="definition of occupancy" data-type="indexterm" id="id2207"/><a contenteditable="false" data-primary="warps" data-secondary="maintaining high occupancy" data-type="indexterm" id="id2208"/>同时驻留；一个 warp 因 dependency 无法 issue 时，scheduler 可选择另一个 ready warp，从而隐藏部分 memory/instruction latency。<em>occupancy</em> 是 active warp 数相对于目标 SM architecture maximum 的比例，不是时间利用率、FLOP utilization 或 throughput 本身。</p>
+          <p>occupancy 很低时，ready warp 不足可能让 SM 在 memory/dependency stall 期间没有指令可发射；但低 occupancy 不必然表示低 SM utilization，例如具有足够 instruction-level parallelism 的 compute-heavy kernel 仍可能表现良好。Blackwell 每 SM 的 64 K register file 是 residency constraint 之一；能否支持更多 warp 且不 spill 取决于每 thread register demand、allocation granularity、block size 和其他资源。</p>
+          <div data-type="tip">
+            <p>每 thread 最多 255 个 register 是 architecture limit，不是性能目标。应同时查看 theoretical/achieved occupancy、register allocation、spill、eligible warp、stall reason 和 throughput，再调整 block size、launch bound 或 code；单纯压低 register 数可能增加 spill 并降低性能。</p>
+          </div>
+          <p>较高 occupancy 会增加存在 ready warp 的机会，但不会保证 compute unit busy；所有 warp 可能同时受 memory bandwidth、barrier 或相同 dependency 限制。warp 也不是从 SM 外“swap in”，而是 resident warp 之间进行硬件调度。用其他 ready work 覆盖某个 warp 的等待时间称为 <em>latency hiding</em>。</p>
+          <p>下面用一个极端示例说明：从单 thread 改为足够多的并行 thread，通常会同时改善 occupancy、device activity 和 throughput。CUDA 优化的基础要求是提供足够 parallel work 覆盖目标 GPU，但并非必须或总能“fully occupy”每项硬件资源。</p>
+          <p class="pagebreak-before">若 achieved occupancy<a contenteditable="false" data-primary="achieved occupancy" data-type="indexterm" id="id2209"/><a contenteditable="false" data-primary="achieved occupancy" data-secondary="parallelism to increase" data-type="indexterm" id="id2210"/> 很低、性能也差，且 profiler 显示 latency/eligible-warp shortage，可以增加 grid 中的 block、调整 block size 或降低不必要的 resource pressure。目标应是足以隐藏当前 latency 的并行度，而不是机械追求现代 GPU 的 <span class="keep-together">80%–100%</span>；许多高性能 kernel 在更低 occupancy 下达到最佳 throughput。</p>
+          <p>若 occupancy 已足够，而 kernel 受 memory throughput 限制，继续提高到 100% 通常无益，甚至会因限制 per-thread resource 而变慢。所需 resident warp 数取决于 latency、dependency 和 instruction mix；瓶颈也可能是 memory bandwidth、execution pipeline、serialization 或 synchronization。</p>
+          <p>为了展示 parallelism 的影响，<a contenteditable="false" data-primary="parallelism" data-secondary="adding two vectors sequentially and in parallel" data-type="indexterm" id="ch6add"/><a contenteditable="false" data-primary="GPUs" data-secondary="parallelism" data-tertiary="adding two vectors sequentially and in parallel" data-type="indexterm" id="ch6add2"/><a contenteditable="false" data-primary="occupancy" data-secondary="impact of occupancy" data-type="indexterm" id="ch6add3"/><a contenteditable="false" data-primary="high occupancy" data-secondary="maintaining high occupancy" data-tertiary="impact of occupancy" data-type="indexterm" id="ch6add4"/>考虑长度为 <em>N</em> 的 vector addition（C = A + B）。比较两个 kernel：<code>addSequential</code> 与 <code>addParallel</code>。<code>addSequential</code> 只让一个 thread 在 loop 中处理全部 <em>N</em> 个元素；<code>addParallel</code> 则让多个 thread 分担元素。这个对比同时改变了 parallelism、instruction count per thread、memory-level parallelism 和 launch geometry，不能把全部加速仅归因于 occupancy。</p>
+          <p>sequential version 由一个 GPU thread 串行处理整个 workload：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="cp">#include</code><code class="w"> </code><code class="cpf">&lt;cuda_runtime.h&gt;</code><code class="cp"/>
+
+<code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">1'000'000</code><code class="p">;</code><code class="w"/>
+
+<code class="c1">// Single thread does all N additions</code>
+<code class="n">__global__</code><code class="w"> </code><code class="kt">void</code><code class="w"> </code><code class="n">addSequential</code><code class="p">(</code><code class="k">const</code><code class="w"> </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">A</code><code class="p">,</code><code class="w"/>
+<code class="w">                              </code><code class="k">const</code><code class="w"> </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">B</code><code class="p">,</code><code class="w"/>
+<code class="w">                                    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">C</code><code class="p">,</code><code class="w"/>
+<code class="w">                              </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="p">)</code><code class="w"/>
+<code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="k">if</code><code class="w"> </code><code class="p">(</code><code class="n">blockIdx</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">==</code><code class="w"> </code><code class="mi">0</code><code class="w"> </code><code class="o">&amp;&amp;</code><code class="w"> </code><code class="n">threadIdx</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">==</code><code class="w"> </code><code class="mi">0</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="k">for</code><code class="w"> </code><code class="p">(</code><code class="kt">int</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">;</code><code class="w"> </code><code class="o">++</code><code class="n">i</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">            </code><code class="n">C</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">A</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">B</code><code class="p">[</code><code class="n">i</code><code class="p">];</code><code class="w"/>
+<code class="w">        </code><code class="p">}</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+<code class="p">}</code><code class="w"/>
+
+<code class="kt">int</code><code class="w"> </code><code class="n">main</code><code class="p">()</code><code class="w"/>
+<code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="c1">// Allocate and initialize host</code>
+<code class="w">    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_A</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_B</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_C</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_A</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_B</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+
+<code class="w">    </code><code class="k">for</code><code class="w"> </code><code class="p">(</code><code class="kt">int</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">;</code><code class="w"> </code><code class="o">++</code><code class="n">i</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="n">h_A</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="kt">float</code><code class="p">(</code><code class="n">i</code><code class="p">);</code><code class="w"/>
+<code class="w">        </code><code class="n">h_B</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="kt">float</code><code class="p">(</code><code class="n">i</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="mi">2</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Allocate device</code>
+<code class="w">    </code><code class="kt">float</code><code class="w"> </code><code class="o">*</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="o">*</code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="o">*</code><code class="n">d_C</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMalloc</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMalloc</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMalloc</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Copy inputs to device</code>
+<code class="w">    </code><code class="n">cudaMemcpy</code><code class="p">(</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="n">h_A</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">cudaMemcpyHostToDevice</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaMemcpy</code><code class="p">(</code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="n">h_B</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">cudaMemcpyHostToDevice</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Launch: one thread</code>
+<code class="w">    </code><code class="c1">// Note: This kernel assumes &lt;&lt;&lt;1,1&gt;&gt;&gt; </code>
+<code class="w">    </code><code class="c1">// (one block, one thread). </code>
+<code class="w">    </code><code class="c1">// Do not change the launch config when running this example.</code>
+<code class="w">    </code><code class="n">addSequential</code><code class="o">&lt;&lt;&lt;</code><code class="mi">1</code><code class="p">,</code><code class="mi">1</code><code class="o">&gt;&gt;&gt;</code><code class="p">(</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="n">d_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Ensure completion before exit</code>
+<code class="w">    </code><code class="n">cudaDeviceSynchronize</code><code class="p">();</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Copy d_C =&gt; h_C (back to host)</code>
+<code class="w">    </code><code class="n">cudaMemcpy</code><code class="p">(</code><code class="n">h_C</code><code class="p">,</code><code class="w"> </code><code class="n">d_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">cudaMemcpyDeviceToHost</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="c1">// Cleanup</code>
+<code class="w">    </code><code class="n">cudaFree</code><code class="p">(</code><code class="n">d_A</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaFree</code><code class="p">(</code><code class="n">d_B</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaFree</code><code class="p">(</code><code class="n">d_C</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_A</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_B</code><code class="p">);</code><code class="w"/>
+<code class="w">    </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_C</code><code class="p">);</code><code class="w"/>
+
+<code class="w">    </code><code class="k">return</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"/>
+<code class="p">}</code><code class="w"/></pre>
+          <p>该版本只启动一个有效 thread；硬件仍按 warp 执行，但其余 lane inactive，且只有一个 block/warp，绝大多数 SM 没有工作。因此 occupancy、lane utilization 和 device-level parallelism 都很低，性能也差。</p>
+          <p>在 PyTorch 等高层 framework 中也要避免从 host 反复发起 tiny GPU operation。下面的 naive Python loop 对每个元素执行 indexing/add/assignment，形成 <em>N</em> 次高层迭代以及大量 dispatch、kernel 和可能的 host-device synchronization 开销；其具体 kernel 数取决于 PyTorch implementation，不能简单断言恰好每次只有一个 add kernel：</p>
+
+          <pre data-code-language="python" data-type="programlisting"><code class="kn">import</code> <code class="nn">torch</code>
+
+<code class="n">N</code> <code class="o">=</code> <code class="mi">1_000_000</code>
+<code class="n">A</code> <code class="o">=</code> <code class="n">torch</code><code class="o">.</code><code class="n">arange</code><code class="p">(</code><code class="n">N</code><code class="p">,</code> <code class="n">dtype</code><code class="o">=</code><code class="n">torch</code><code class="o">.</code><code class="n">float32</code><code class="p">,</code> <code class="n">device</code><code class="o">=</code><code class="s1">'cuda'</code><code class="p">)</code>
+<code class="n">B</code> <code class="o">=</code> <code class="mi">2</code> <code class="o">*</code> <code class="n">A</code>
+<code class="n">C</code> <code class="o">=</code> <code class="n">torch</code><code class="o">.</code><code class="n">empty_like</code><code class="p">(</code><code class="n">A</code><code class="p">)</code>
+
+<code class="c1"># Ensure all previous work is done</code>
+<code class="n">torch</code><code class="o">.</code><code class="n">cuda</code><code class="o">.</code><code class="n">synchronize</code><code class="p">()</code>
+
+<code class="c1"># Naive, Sequential GPU operations - DO NOT DO THIS</code>
+<code class="k">with</code> <code class="n">torch</code><code class="o">.</code><code class="n">inference_mode</code><code class="p">():</code> <code class="c1"># avoids unnecessary autograd graph construction</code>
+    <code class="c1"># This launches N tiny GPU operations serially</code>
+    <code class="k">for</code> <code class="n">i</code> <code class="ow">in</code> <code class="nb">range</code><code class="p">(</code><code class="n">N</code><code class="p">):</code>
+        <code class="n">C</code><code class="p">[</code><code class="n">i</code><code class="p">]</code> <code class="o">=</code> <code class="n">A</code><code class="p">[</code><code class="n">i</code><code class="p">]</code> <code class="o">+</code> <code class="n">B</code><code class="p">[</code><code class="n">i</code><code class="p">]</code>
+
+<code class="n">torch</code><code class="o">.</code><code class="n">cuda</code><code class="o">.</code><code class="n">synchronize</code><code class="p">()</code></pre>
+          <p>该代码把本可向量化的工作拆成大量 tiny operation，主要问题是 Python/dispatcher/launch 与 scalar indexing overhead、缺乏跨元素并行，以及可能的同步；其行为和单个 <code>addSequential</code> CUDA kernel 并不等价，也不能只用 occupancy 概括。</p>
+          <p>下面改为并行 CUDA kernel 和 PyTorch vectorized operation。图 <a data-type="xref" href="#ch06_figure_19_1757308039123829">6-19</a> 示意各元素并行相加。</p>
+          <figure><div class="figure" id="ch06_figure_19_1757308039123829">
+            <img alt="展示并行向量加法的示意图，显示向量 A 和向量 B 的元素相加以得到向量 C。" src="assets/aisp_0619.png"/>
+            <h6><span class="label">图 6-19. </span>vector 中各元素的并行加法</h6>
+          </div></figure>
+          <p>下面的 CUDA C++ code 启动足够 thread 覆盖所有元素（<code>&lt;&lt;&lt; (N+255)/256, 256 &gt;&gt;&gt;</code>），每 block 256 个 thread，并以 ceiling division 计算 block 数，从而并行处理 <em>N</em> 个元素。bounds check 处理最后一个不完整 block；大规模输入仍需注意 integer overflow 与 grid limit：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="cp">#include</code><code class="w"> </code><code class="cpf">&lt;cuda_runtime.h&gt;</code><code class="cp"/>
+
+<code class="k">const</code><code class="w"> </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">1'000'000</code><code class="p">;</code><code class="w"/>
+
+<code class="c1">// One thread per element</code>
+<code class="n">__global__</code><code class="w"> </code><code class="kt">void</code><code class="w"> </code><code class="n">addParallel</code><code class="p">(</code><code class="k">const</code><code class="w"> </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">__restrict__</code><code class="w"> </code><code class="n">A</code><code class="p">,</code><code class="w"/>
+<code class="w">                            </code><code class="k">const</code><code class="w"> </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">__restrict__</code><code class="w"> </code><code class="n">B</code><code class="p">,</code><code class="w"/>
+<code class="w">                                  </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">__restrict__</code><code class="w"> </code><code class="n">C</code><code class="p">,</code><code class="w"/>
+<code class="w">                            </code><code class="kt">int</code><code class="w"> </code><code class="n">N</code><code class="p">)</code><code class="w"/>
+<code class="p">{</code><code class="w"/>
+<code class="w">    </code><code class="kt">int</code><code class="w"> </code><code class="n">idx</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">blockIdx</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="n">blockDim</code><code class="p">.</code><code class="n">x</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threadIdx</code><code class="p">.</code><code class="n">x</code><code class="p">;</code><code class="w"/>
+<code class="w">    </code><code class="k">if</code><code class="w"> </code><code class="p">(</code><code class="n">idx</code><code class="w"> </code><code class="o">&lt;</code><code class="w"> </code><code class="n">N</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"/>
+<code class="w">        </code><code class="n">C</code><code class="p">[</code><code class="n">idx</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">A</code><code class="p">[</code><code class="n">idx</code><code class="p">]</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">B</code><code class="p">[</code><code class="n">idx</code><code class="p">];</code><code class="w"/>
+<code class="w">    </code><code class="p">}</code><code class="w"/>
+<code class="p">}</code><code class="w"/>
+
+<code class="kt">int</code><code class="w"> </code><code class="n">main</code><code class="p">()</code><code class="w"/>
+<code class="p">{</code><code class="w"/>
+<code class="w">  </code><code class="c1">// Allocate and initialize host (pinned for faster DMA)</code>
+<code class="w">  </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_A</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">  </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_B</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">  </code><code class="kt">float</code><code class="o">*</code><code class="w"> </code><code class="n">h_C</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_A</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_B</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaMallocHost</code><code class="p">(</code><code class="o">&amp;</code><code class="n">h_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">));</code><code class="w"/>
+<code class="w">  </code><code class="k">for</code><code class="w"> </code><code class="p">(</code><code class="kt">int</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"> </code><code class="n">i</code><code class="w"> </code><code class="o">*</code><code class="n">lt</code><code class="p">;</code><code class="w"> </code><code class="n">N</code><code class="p">;</code><code class="w"> </code><code class="o">++</code><code class="n">i</code><code class="p">)</code><code class="w"> </code><code class="p">{</code><code class="w"> </code><code class="n">h_A</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="kt">float</code><code class="p">(</code><code class="n">i</code><code class="p">);</code><code class="w"> </code><code class="n">h_B</code><code class="p">[</code><code class="n">i</code><code class="p">]</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="kt">float</code><code class="p">(</code><code class="mi">2</code><code class="o">*</code><code class="n">i</code><code class="p">);</code><code class="w"> </code><code class="p">}</code><code class="w"/>
+
+<code class="w">  </code><code class="c1">// Create a non-blocking stream and allocate device buffers</code>
+<code class="w">  </code><code class="n">cudaStream_t</code><code class="w"> </code><code class="n">s</code><code class="p">;</code><code class="w"> </code><code class="n">cudaStreamCreateWithFlags</code><code class="p">(</code><code class="o">&amp;</code><code class="n">s</code><code class="p">,</code><code class="w"> </code><code class="n">cudaStreamNonBlocking</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="kt">float</code><code class="w"> </code><code class="o">*</code><code class="n">d_A</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">,</code><code class="w"> </code><code class="o">*</code><code class="n">d_B</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">,</code><code class="w"> </code><code class="o">*</code><code class="n">d_C</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="k">nullptr</code><code class="p">;</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaMallocAsync</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaMallocAsync</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaMallocAsync</code><code class="p">(</code><code class="o">&amp;</code><code class="n">d_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="w"> </code><code class="o">*</code><code class="w"> </code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+
+<code class="w">  </code><code class="c1">// Async HtoD copies on the same stream</code>
+<code class="w">  </code><code class="n">cudaMemcpyAsync</code><code class="p">(</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="n">h_A</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="o">*</code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">cudaMemcpyHostToDevice</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaMemcpyAsync</code><code class="p">(</code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="n">h_B</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="o">*</code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">cudaMemcpyHostToDevice</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+
+<code class="w">  </code><code class="c1">// Launch (same stream)</code>
+<code class="w">  </code><code class="kt">int</code><code class="w"> </code><code class="n">threads</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">256</code><code class="p">;</code><code class="w"/>
+<code class="w">  </code><code class="kt">int</code><code class="w"> </code><code class="n">blocks</code><code class="w">  </code><code class="o">=</code><code class="w"> </code><code class="p">(</code><code class="n">N</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">threads</code><code class="w"> </code><code class="o">-</code><code class="w"> </code><code class="mi">1</code><code class="p">)</code><code class="w"> </code><code class="o">/</code><code class="w"> </code><code class="n">threads</code><code class="p">;</code><code class="w"/>
+<code class="w">  </code><code class="n">addParallel</code><code class="o">&lt;&lt;&lt;</code><code class="n">blocks</code><code class="p">,</code><code class="w"> </code><code class="n">threads</code><code class="p">,</code><code class="w"> </code><code class="mi">0</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="o">&gt;&gt;&gt;</code><code class="p">(</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="n">d_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="p">);</code><code class="w"/>
+
+<code class="w">  </code><code class="c1">// Async DtoH copy and stream sync</code>
+<code class="w">  </code><code class="n">cudaMemcpyAsync</code><code class="p">(</code><code class="n">h_C</code><code class="p">,</code><code class="w"> </code><code class="n">d_C</code><code class="p">,</code><code class="w"> </code><code class="n">N</code><code class="o">*</code><code class="k">sizeof</code><code class="p">(</code><code class="kt">float</code><code class="p">),</code><code class="w"> </code><code class="n">cudaMemcpyDeviceToHost</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaStreamSynchronize</code><code class="p">(</code><code class="n">s</code><code class="p">);</code><code class="w"/>
+
+<code class="w">  </code><code class="c1">// Cleanup (stream-ordered free)</code>
+<code class="w">  </code><code class="n">cudaFreeAsync</code><code class="p">(</code><code class="n">d_A</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"> </code><code class="n">cudaFreeAsync</code><code class="p">(</code><code class="n">d_B</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"> </code><code class="n">cudaFreeAsync</code><code class="p">(</code><code class="n">d_C</code><code class="p">,</code><code class="w"> </code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaStreamDestroy</code><code class="p">(</code><code class="n">s</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_A</code><code class="p">);</code><code class="w"> </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_B</code><code class="p">);</code><code class="w"> </code><code class="n">cudaFreeHost</code><code class="p">(</code><code class="n">h_C</code><code class="p">);</code><code class="w"/>
+<code class="w">  </code><code class="k">return</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"/>
+<code class="p">}</code><code class="w"/></pre>
+          <p>当 <em>N</em> 足够大时，并行版本可利用更多 GPU resource。PyTorch 的 vectorized expression（<code>A + B</code>）通常会发起面向整个 tensor 的 GPU operation，让 backend 选择类似前述 <code>addParallel</code> 的并行 kernel；在 eager mode 下该 expression 通常对应一个 elementwise kernel，但 compilation/fusion/backend 可能改变实际 launch。下面是并行版本：</p>
+
+          <pre data-code-language="python" data-type="programlisting"><code class="c1"># add_parallel.py</code>
+<code class="kn">import</code> <code class="nn">torch</code>
+
+<code class="n">N</code> <code class="o">=</code> <code class="mi">1_000_000</code>
+<code class="n">A</code> <code class="o">=</code> <code class="n">torch</code><code class="o">.</code><code class="n">arange</code><code class="p">(</code><code class="n">N</code><code class="p">,</code> <code class="n">dtype</code><code class="o">=</code><code class="n">torch</code><code class="o">.</code><code class="n">float32</code><code class="p">,</code> <code class="n">device</code><code class="o">=</code><code class="s1">'cuda'</code><code class="p">)</code>
+<code class="n">B</code> <code class="o">=</code> <code class="mi">2</code> <code class="o">*</code> <code class="n">A</code>
+
+<code class="n">torch</code><code class="o">.</code><code class="n">cuda</code><code class="o">.</code><code class="n">synchronize</code><code class="p">()</code>
+
+<code class="c1"># Proper parallel approach using vectorized operation</code>
+<code class="c1"># Launches a single GPU kernel that adds all elements in parallel</code>
+<code class="n">C</code> <code class="o">=</code> <code class="n">A</code> <code class="o">+</code> <code class="n">B</code> 
+
+<code class="n">torch</code><code class="o">.</code><code class="n">cuda</code><code class="o">.</code><code class="n">synchronize</code><code class="p">()</code></pre>
+          <div data-type="tip">
+            <p>在 PyTorch 中，优先使用 vectorized tensor operation、library primitive 或 compiler-generated fusion，通常能减少 Python/dispatch/launch overhead 并采用成熟 kernel。Python loop 不一定使 device operation 完全串行，因为 launch 可异步排队，但大量细粒度 operation 往往降低 efficiency。不存在“几乎总有”完全匹配的最优 native implementation；仍应检查 semantics、fusion、layout、temporary allocation 和 profiler timeline。</p>
+          </div>
+          <p>可使用 Nsight Systems 与 Nsight Compute<a contenteditable="false" data-primary="Nsight Systems" data-secondary="impact of parallel versus serial operation" data-type="indexterm" id="id2211"/><a contenteditable="false" data-primary="Nsight Compute" data-secondary="impact of parallel versus serial operation" data-type="indexterm" id="id2212"/>比较 sequential 与 parallel implementation 的 timeline、kernel duration、active warp 和 execution efficiency。下面给出原书的 Nsight Systems（<code>nsys</code>）与 Nsight Compute（<code>ncu</code>）命令；metric availability/name 依工具与 architecture version，命令本身也未显式收集表 6-6 的全部指标：</p>
+
+          <pre data-code-language="python" data-type="programlisting"><code class="c1"># Sequential add</code>
+<code class="n">nsys</code> <code class="n">profile</code> \
+  <code class="o">--</code><code class="n">stats</code><code class="o">=</code><code class="n">true</code> \
+  <code class="o">-</code><code class="n">t</code> <code class="n">cuda</code><code class="p">,</code><code class="n">nvtx</code> \
+  <code class="o">-</code><code class="n">o</code> <code class="n">sequential_nsys_report</code> \
+  <code class="o">./</code><code class="n">add_sequential</code><code class="o">.</code><code class="n">py</code>
+
+<code class="n">ncu</code> \
+ <code class="o">--</code><code class="n">section</code> <code class="n">SpeedOfLight</code> \
+ <code class="o">--</code><code class="n">metrics</code> 
+     <code class="n">sm__warps_active</code><code class="o">.</code><code class="n">avg</code><code class="o">.</code><code class="n">pct_of_peak_sustained_active</code><code class="p">,</code><code class="n">gpu__time_duration</code><code class="o">.</code><code class="n">avg</code> \
+ <code class="o">--</code><code class="n">target</code><code class="o">-</code><code class="n">processes</code> <code class="nb">all</code> \
+ <code class="o">--</code><code class="nb">print</code><code class="o">-</code><code class="n">summary</code> <code class="n">per</code><code class="o">-</code><code class="n">gpu</code> \
+ <code class="o">-</code><code class="n">o</code> <code class="n">sequential_ncu_report</code> \
+ <code class="o">./</code><code class="n">add_sequential</code><code class="o">.</code><code class="n">py</code>
+ 
+<code class="c1"># Parallel add</code>
+<code class="n">nsys</code> <code class="n">profile</code> \
+  <code class="o">--</code><code class="n">stats</code><code class="o">=</code><code class="n">true</code> \
+  <code class="o">-</code><code class="n">t</code> <code class="n">cuda</code><code class="p">,</code><code class="n">nvtx</code> \
+  <code class="o">-</code><code class="n">o</code> <code class="n">parallel_nsys_report</code> \
+  <code class="o">./</code><code class="n">add_parallel</code><code class="o">.</code><code class="n">py</code>
+
+<code class="n">ncu</code> \
+ <code class="o">--</code><code class="n">section</code> <code class="n">SpeedOfLight</code> \
+ <code class="o">--</code><code class="n">metrics</code> <code class="n">sm__warps_active</code><code class="o">.</code><code class="n">avg</code><code class="o">.</code><code class="n">pct_of_peak_sustained_active</code> \
+ <code class="o">--</code><code class="n">target</code><code class="o">-</code><code class="n">processes</code> <code class="nb">all</code> \
+ <code class="o">--</code><code class="nb">print</code><code class="o">-</code><code class="n">summary</code> <code class="n">per</code><code class="o">-</code><code class="n">gpu</code> \
+ <code class="o">-</code><code class="n">o</code> <code class="n">parallel_ncu_report</code> \
+ <code class="o">./</code><code class="n">add_parallel</code><code class="o">.</code><code class="n">py</code></pre>
+          <p><code>nsys</code> 用于观察 CPU/CUDA timeline、launch、copy、dependency 与 idle interval；仅凭 timeline 不能断言 GPU 是“starved”还是某一具体瓶颈。<code>ncu</code> 收集 per-kernel hardware counter，用于分析 occupancy、warp state、memory/execution throughput 等原因。两者需结合 workload context 与 <span class="keep-together">metric definition</span> 解读。</p>
+          <p>只运行 <code>nsys</code> 可能看不到细粒度 per-kernel counter；只运行 <code>ncu</code> 则可能缺少端到端 launch/data/dependency context，而且 replay 会扰动 timing。表 <a data-type="xref" href="#ch06_table_6_1757308039130184">6-6</a> 保留原书示例结果，但缺少 GPU、软件版本、warm-up、重复次数和完整 metric command，不能视为可跨系统复现的 benchmark。</p>
+          <table id="ch06_table_6_1757308039130184">
+            <caption><span class="label">表 6-6. </span>sequential 与 parallel CUDA kernel 的原书示例对比</caption>
+            <thead>
+              <tr>
+                <th>指标</th>
+                <th><code>add_sequential</code></th>
+                <th><code>add_parallel</code></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>内核执行时间（ms）</td>
+                <td>48.21</td>
+                <td>2.17</td>
+              </tr>
+              <tr>
+                <td>GPU utilization（原书口径未定义）</td>
+                <td>1.5%</td>
+                <td>95%</td>
+              </tr>
+              <tr>
+                <td>达到的占用率</td>
+                <td>1.3%</td>
+                <td>38.7%</td>
+              </tr>
+              <tr>
+                <td>warp 执行效率</td>
+                <td>3.1%</td>
+                <td>100%</td>
+              </tr>
+            </tbody>
+           
+          </table>
+          <div data-type="tip">
+            <p>不同工具和版本的 metric 名称、分母与时间窗口不同。Nsight Systems timeline-derived GPU activity、Nsight Compute per-kernel SM Active、active-warps occupancy 和 warp execution efficiency 衡量的是不同对象，不能互换，也不能都解释成“SM 被 active warp 占满的程度”。报告结果时必须给出精确 metric 名称与采样范围。</p>
+          </div>
+          <p>按表中原书数据，从 single-thread implementation 改为 multiwarp implementation 后，achieved occupancy 由 1.3% 升至约 38.7%，duration 从 48.21 ms 降至 2.17 ms，算术比值约为 22.2×。加速来自大量 parallelism、lane utilization、memory-level parallelism 和每 thread 工作量变化，不能只归因于 occupancy。</p>
+          <p>sequential case 只有一个 block/warp，且仅一个 lane 执行 loop，因此 device coverage 和 active-lane ratio 都很低。parallel case 可让更多 SM/warp 处理不同元素，表中 warp execution efficiency 从 3.1% 变为 100% 与 1/32 lane 到完整 warp 的理想算术一致；但表中的 1.5%/95% “GPU utilization”缺少 metric definition，不能由 occupancy 或 active lane 直接推出。</p>
+          <p>该极端示例说明 throughput-oriented GPU 需要足够 parallel work；所需 thread/block 数依 GPU size、kernel duration、resource usage 和 workload，不能只用“越多越好”概括其 <span class="keep-together">目标</span>。</p>
+          <p>GPU 由 CPU/runtime 发起 kernel，并通过不同 memory space/cache 访问数据。host launch、instruction dependency 和 memory access 等 latency 只有在存在可独立推进的工作且资源允许时才能 overlap/hide；有些 bandwidth 或 serialization bottleneck 不能靠增加 warp 消除。</p>
+          <p>kernel 提供足够 independent warp 后，hardware scheduler 可在 ready warp 之间发射 memory/math instruction，从而覆盖部分等待时间。source code 并不直接“指示 GPU interleave”，实际行为由 dependency、scheduler 和 pipeline availability 决定。</p>
+          <p>multiwarp parallel kernel 可受益于 warp-level latency hiding：一个 warp 等待 load dependency 时，另一个 ready warp 可发射 add 或其他 load。是否并行发生以及能隐藏多少 latency 取决于 execution/memory pipeline、cache 和 bandwidth；后续章节将继续讨论。</p>
+          <p>sequential kernel 没有其他 warp 可在 dependency stall 时运行，因此大量 SM 完全空闲，唯一 active warp 的 pipeline 也可能出现等待。parallel version 提供更多可调度工作，但不保证 GPU 持续 busy；图 <a data-type="xref" href="#ch06_figure_20_1757308039123845">6-20</a> 是概念性 timeline 对比，并非 profiler trace。</p>
+          <figure><div class="figure" id="ch06_figure_20_1757308039123845">
+            <img alt="比较并行和顺序时间线的示意图：并行版本中 GPU 持续活动，顺序版本中则出现空闲间隙。" src="assets/aisp_0620.png"/>
+            <h6><span class="label">图 6-20. </span>parallel 与 sequential timeline 的概念对比</h6>
+          </div></figure>
+          <p>图中 sequential timeline 在 memory wait 期间出现 idle gap；parallel timeline 用其他 warp 的工作覆盖部分 gap。真实 kernel 仍可能受 bandwidth、dependency、barrier、tail effect 或资源竞争限制，因此不会必然连续 busy。</p>
+          <p>关键是先提供足够 parallel work 覆盖目标 device，再确认是否存在 latency-hiding shortage。足够 occupancy 可以减少部分 idle stall，但不保证最大 throughput；本例原书报告约 95% 的未定义 GPU-utilization metric，应只视为该测试结果。<a contenteditable="false" data-primary="" data-startref="ch6add" data-type="indexterm" id="id2213"/><a contenteditable="false" data-primary="" data-startref="ch6add2" data-type="indexterm" id="id2214"/><a contenteditable="false" data-primary="" data-startref="ch6add3" data-type="indexterm" id="id2215"/><a contenteditable="false" data-primary="" data-startref="ch6add4" data-type="indexterm" id="id2216"/> </p>
+          <p>有足够 thread 后，还应优化 active-lane efficiency、instruction-level parallelism、memory access 和 per-thread work。即使 occupancy 为 100%，kernel 仍可能受 memory bandwidth/latency、execution pipeline、dependency 或 synchronization 限制；memory-bound 也不只是“memory 很慢”，而是当前 arithmetic intensity 下性能受 memory subsystem 上界约束。</p>
+          <p>LLM 的 token-by-token decode 常见于<a contenteditable="false" data-primary="decode" data-secondary="LLM decode phase as memory bound" data-type="indexterm" id="id2217"/><a contenteditable="false" data-primary="memory" data-secondary="memory-bound workload example" data-type="indexterm" id="id2218"/><a contenteditable="false" data-primary="workloads" data-secondary="memory-bound workload example" data-type="indexterm" id="id2219"/>低 arithmetic-intensity、memory-bandwidth-sensitive 场景，尤其 batch 较小时。执行各 layer 时会从 HBM/cache 读取 weight、KV cache 和 activation，并通过 register/shared-memory 等片上路径参与计算；不是把整套 model weight 一次性搬进 register/shared <span class="keep-together">memory</span>。</p>
+          <p>若模型有数千亿 parameter，按每 parameter 8 bit 粗略计算，weight storage 可达数百 GB；实际 footprint 还包括 scale/metadata、KV cache、activation 和并行分片。每 token 读取多少 byte 取决于 quantization、batch、cache、parallelism 和 kernel fusion，并非每次都把整个模型“移入移出 GPU”，但 repeated HBM reads 足以成为 bandwidth bottleneck。</p>
+          <div data-type="tip">
+            <p>峰值 compute throughput 的增长通常快于 off-chip memory bandwidth。<a contenteditable="false" data-primary="GPUs" data-secondary="FLOPs outpacing memory bandwidth" data-type="indexterm" id="id2220"/><a contenteditable="false" data-primary="memory" data-secondary="GPU FLOPs outpacing memory bandwidth" data-type="indexterm" id="id2221"/>原书为特定 Blackwell configuration 列出约 8 TB/s HBM3e peak；实际 SKU、精度、operation 和可达 bandwidth 不同。对 arithmetic intensity 较低的 workload，应优化 reuse、layout、batching、fusion 和 data movement，并用 roofline/profile 判断是否 memory-bound，而不是预设所有现代 AI workload 都受同一瓶颈限制。<a contenteditable="false" data-primary="" data-startref="ch6high" data-type="indexterm" id="id2222"/><a contenteditable="false" data-primary="" data-startref="ch6high2" data-type="indexterm" id="id2223"/><a contenteditable="false" data-primary="" data-startref="ch6high3" data-type="indexterm" id="id2224"/><a contenteditable="false" data-primary="" data-startref="ch6high4" data-type="indexterm" id="id2225"/><a contenteditable="false" data-primary="" data-startref="ch6high5" data-type="indexterm" id="id2226"/><a contenteditable="false" data-primary="" data-startref="ch6high6" data-type="indexterm" id="id2227"/><a contenteditable="false" data-primary="" data-startref="ch6high7" data-type="indexterm" id="id2228"/> </p>
+          </div>
+        </div></section>
+        <section data-pdf-bookmark="Tuning Occupancy with Launch Bounds" data-type="sect2"><div class="sect2" id="ch06_tuning_occupancy_with_launch_bounds_1757308039143879">
+          <h2>使用 launch bounds 调优 occupancy</h2>
+          <p>仅增加 thread 数有时无效，<a contenteditable="false" data-primary="occupancy" data-secondary="tuning" data-tertiary="__launch_bounds__" data-tertiary-sortas="launch_bounds" data-type="indexterm" id="ch6octu"/><a contenteditable="false" data-primary="__launch_bounds__" data-type="indexterm" id="ch6octu2"/><a contenteditable="false" data-primary="__launch_bounds__" data-primary-sortas="launch_bounds" data-type="indexterm" id="ch6octu3"/><a contenteditable="false" data-primary="nvcc CUDA compiler" data-secondary="optimizing for occupancy" data-type="indexterm" id="ch6octu4"/><a contenteditable="false" data-primary="threads" data-secondary="programming CUDA" data-tertiary="maximum threadsPerBlock compile time parameter" data-type="indexterm" id="ch6octu5"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="maximum threadsPerBlock compile time parameter" data-type="indexterm" id="ch6octu6"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="maximum threadsPerBlock compile time parameter" data-type="indexterm" id="ch6octu7"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="minimum thread blocks resident on each SM" data-type="indexterm" id="ch6octu8"/><a contenteditable="false" data-primary="thread blocks" data-secondary="programming CUDA" data-tertiary="minimum thread blocks resident on each SM" data-type="indexterm" id="ch6octu9"/><a contenteditable="false" data-primary="SMs (streaming multiprocessors)" data-secondary="minimum thread blocks resident" data-type="indexterm" id="ch6octuA"/><a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="occupancy tuning with __launch_bounds__" data-type="indexterm" id="ch6octuB"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="occupancy tuning with __launch_bounds__" data-type="indexterm" id="ch6octuC"/><a contenteditable="false" data-primary="compilers" data-secondary="__launch_bounds__" data-secondary-sortas="launch_bounds" data-type="indexterm" id="ch6octuD"/><a contenteditable="false" data-primary="nvcc CUDA compiler" data-secondary="__launch_bounds__" data-secondary-sortas="launch_bounds" data-type="indexterm" id="ch6octuE"/>尤其当每 thread/block 使用大量 register 或 shared memory 时。CUDA kernel annotation <code>__launch_bounds__</code> 可向 compiler 提供预期 launch constraint，使其据此权衡 register allocation 与 code generation；它并不直接“优化 occupancy”。</p>
+          <p>该 annotation 的前两个参数分别是：应用承诺的 maximum threads per block，以及希望 compiler 在资源预算中支持的 minimum blocks per multiprocessor。第一个是 launch contract，超过它启动 kernel 会失败；第二个用于推导 register-use upper bound，但不保证 runtime 实际驻留该数量，因为 shared memory、block limit 和 grid size 等仍可能限制。示例如下：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="n">__global__</code><code class="w"> </code><code class="nf">__launch_bounds__</code><code class="p">(</code><code class="mi">256</code><code class="p">,</code><code class="w"> </code><code class="mi">16</code><code class="p">)</code><code class="w"/>
+<code class="kt">void</code><code class="w"> </code><code class="n">myKernel</code><code class="p">(...)</code><code class="w"> </code><code class="p">{</code><code class="w"> </code><code class="cm">/* ... */</code><code class="w"> </code><code class="p">}</code><code class="w"/></pre>
+          <p><code>__launch_bounds__(256, 16)</code> 承诺该 kernel 每 block 不超过 256 个 thread，并要求 compiler 尝试按每 SM 至少 16 个 block 的目标约束 register usage。16 × 256 = 4,096 个 thread，超过原书所述目标 GPU 每 SM 2,048-thread limit，因此第二个参数在该 target 上不可实现；它不是让 compiler“分配足够 register 和 inline function”来突破硬件上限。</p>
+          <div data-type="tip">
+            <p>原书以许多现代 NVIDIA GPU（包括所述 <span class="keep-together">Blackwell</span> target）的每 block 1,024 thread、每 SM 2,048 resident thread 为例；实际 limit 应由目标 compute capability/device attribute 确认。<a contenteditable="false" data-primary="GPUs" data-secondary="architecture" data-tertiary="maximum threads per SM and block" data-type="indexterm" id="id2229"/><a contenteditable="false" data-primary="architecture of GPUs" data-secondary="maximum threads per SM and block" data-type="indexterm" id="id2230"/></p>
+          </div>
+          <p>对于每 SM 最多 2,048 thread 的 target，仅按 thread limit 计算最多驻留 8 个 256-thread block；其他资源可能进一步降低数量。compiler/ptxas 不会把 16 自动“缩减为 8”并继续保留等价 request，而可能警告该 minimum-CTA constraint 超出范围并忽略相应 directive。<a contenteditable="false" data-primary="ptxas warning" data-type="indexterm" id="id2231"/></p>
+          <div data-type="tip">
+            <p>原书给出的 warning 类似：“ptxas warning: Value of threads per SM…is out of range. <code>.minnctapersm</code> will be ignored.” 具体文字和行为依 Toolkit/target；build system 不应忽略 ptxas warning。</p>
+          </div>
+          <p><code>__launch_bounds__</code> 会影响 compiler 推导的 register-use threshold。为满足 minimum-block target，compiler 可能降低 register use，从而提高潜在 residency，也可能增加 instruction count 或 spill；在某些情况下 compiler 还可能提高 register use 到不降低目标 residency 的上限，以减少指令。unrolling/inlining 变化是优化结果，不是 annotation 的固定语义，因此不保证更一致的 warp throughput。</p>
+          <p><em>提高 occupancy 必须与 per-thread resource 权衡。</em><a contenteditable="false" data-primary="occupancy" data-secondary="increasing occupancy and per-thread resources" data-type="indexterm" id="id2232"/><a contenteditable="false" data-primary="registers" data-secondary="register spilling" data-type="indexterm" id="id2233"/>spill 是 compiler 因 register pressure/constraint 把 value 放入 local memory 的结果，不是运行时“thread 太多而耗尽 register”。减少 register 可提高 residency，也可能增加 local-memory traffic 或 recomputation。</p>
+          <p>CUDA Occupancy API 可在 host 侧根据目标 device 和 kernel resource metadata 估算 launch configuration。例如，<code>cudaOccupancyMaxPotentialBlockSize()</code> 搜索潜在 occupancy 较高的 block size，并考虑 register、static/dynamic shared memory 与 block limit。<code>cudaOccupancyMaxPotentialBlockSize</code> 是静态 occupancy calculator，不执行 kernel、不测量时间，也不是 performance autotuner：</p>
+
+          <pre data-code-language="cpp" data-type="programlisting"><code class="kt">int</code><code class="w"> </code><code class="n">minGridSize</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">,</code><code class="w"> </code><code class="n">bestBlockSize</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"/>
+
+<code class="c1">// If your kernel uses dynamic shared memory (extern __shared__), </code>
+<code class="c1">// set this correctly:</code>
+<code class="kt">size_t</code><code class="w"> </code><code class="n">dynSmemBytes</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="cm">/* bytes per block (e.g., tiles * sizeof(T)) */</code><code class="w"> </code><code class="mi">0</code><code class="p">;</code><code class="w"/>
+
+<code class="n">cudaOccupancyMaxPotentialBlockSize</code><code class="p">(</code><code class="w"/>
+<code class="w">  </code><code class="o">&amp;</code><code class="n">minGridSize</code><code class="p">,</code><code class="w"> </code><code class="o">&amp;</code><code class="n">bestBlockSize</code><code class="p">,</code><code class="w"/>
+<code class="w">  </code><code class="n">myKernel</code><code class="p">,</code><code class="w"/>
+<code class="w">  </code><code class="n">dynSmemBytes</code><code class="p">,</code><code class="w">      </code><code class="c1">// must match your kernel's dynamic shared memory use</code>
+<code class="w">  </code><code class="cm">/* blockSizeLimit = */</code><code class="w"> </code><code class="mi">0</code><code class="p">);</code><code class="w"/>
+
+<code class="c1">// Compute a grid that covers N, but don't go below the min grid </code>
+<code class="c1">// that saturates occupancy</code>
+<code class="kt">int</code><code class="w"> </code><code class="n">gridSize</code><code class="w"> </code><code class="o">=</code><code class="w"> </code><code class="n">std</code><code class="o">::</code><code class="n">max</code><code class="p">(</code><code class="n">minGridSize</code><code class="p">,</code><code class="w"> </code><code class="p">(</code><code class="n">N</code><code class="w"> </code><code class="o">+</code><code class="w"> </code><code class="n">bestBlockSize</code><code class="w"> </code><code class="o">-</code><code class="w"> </code><code class="mi">1</code><code class="p">)</code><code class="w"> </code><code class="o">/</code><code class="w"> </code><code class="n">bestBlockSize</code><code class="p">);</code><code class="w"/>
+
+<code class="n">myKernel</code><code class="o">&lt;&lt;&lt;</code><code class="n">gridSize</code><code class="p">,</code><code class="w"> </code><code class="n">bestBlockSize</code><code class="p">,</code><code class="w"> </code><code class="n">dynSmemBytes</code><code class="o">&gt;&gt;&gt;</code><code class="p">(...);</code><code class="w"/></pre>
+          <p>API 返回候选 <code>bestBlockSize</code> 和达到该潜在 occupancy 所需的 minimum grid size。<code>minGridSize</code> 不是覆盖长度 N 的正确性 grid，也不保证运行时“saturate”任何 utilization metric。示例使用 <code>gridSize = max(minGridSize, ceil_div(N, bestBlockSize))</code> 时会在小 N 下启动额外 thread，kernel 必须有 bounds check 或 grid-stride loop；还要处理 N=0、integer overflow 和 grid limit。若使用 extern <code>__shared__</code>，必须传入与 block size 对应的真实 dynamic-shared-memory function/value，而不是错误常量。</p>
+          <div class="pagebreak-before less_space" data-type="tip">
+            <p>应对 Occupancy API 候选及相邻合法 block size 进行 warm-up 和重复计时，并检查 correctness。register pressure、instruction count、shared memory、cache、memory coalescing 和 problem shape 都可能让 sub-maximal occupancy 更快；“±1–2”应理解为相邻 warp-multiple candidate，而不是任意增减 1 个 thread。</p>
+          </div>
+          <p>compiler heuristic 通常是起点，<code>__launch_bounds__</code> 和 occupancy calculator 可表达 constraint/提供候选，但不是对 runtime occupancy 的显式控制。只有在 compiler report 与 profiler <em>证明</em> resource-limited residency 位于关键路径，并且 kernel 能安全权衡 per-thread resource 时才应使用；否则可能损害性能或限制可用 block size。</p>
+          <div data-type="tip">
+            <p class="fix_tracking"><a contenteditable="false" data-primary="occupancy" data-secondary="register trade-off" data-type="indexterm" id="id2234"/><a contenteditable="false" data-primary="registers" data-secondary="occupancy trade-off" data-type="indexterm" id="id2235"/>register 与 occupancy 的 trade-off 很重要。较少 register 可能允许更多 resident warp并改善 latency hiding，也可能造成 spill、更多 instruction 或更短 live range；较多 register 可能提高 per-thread efficiency 而降低 residency。最佳点需实验。<a contenteditable="false" data-primary="Nsight Compute" data-secondary="Registers per Thread and Occupancy metrics" data-type="indexterm" id="id2236"/>可结合 Nsight Compute 的 register、theoretical/achieved occupancy、spill、eligible-warp、stall 与 duration metric 判断。<a contenteditable="false" data-primary="" data-startref="ch6octu" data-type="indexterm" id="id2237"/><a contenteditable="false" data-primary="" data-startref="ch6octu2" data-type="indexterm" id="id2238"/><a contenteditable="false" data-primary="" data-startref="ch6octu3" data-type="indexterm" id="id2239"/><a contenteditable="false" data-primary="" data-startref="ch6octu4" data-type="indexterm" id="id2240"/><a contenteditable="false" data-primary="" data-startref="ch6octu5" data-type="indexterm" id="id2241"/><a contenteditable="false" data-primary="" data-startref="ch6octu6" data-type="indexterm" id="id2242"/><a contenteditable="false" data-primary="" data-startref="ch6octu7" data-type="indexterm" id="id2243"/><a contenteditable="false" data-primary="" data-startref="ch6octu8" data-type="indexterm" id="id2244"/><a contenteditable="false" data-primary="" data-startref="ch6octu9" data-type="indexterm" id="id2245"/><a contenteditable="false" data-primary="" data-startref="ch6octuA" data-type="indexterm" id="id2246"/><a contenteditable="false" data-primary="" data-startref="ch6octuB" data-type="indexterm" id="id2247"/><a contenteditable="false" data-primary="" data-startref="ch6octuC" data-type="indexterm" id="id2248"/><a contenteditable="false" data-primary="" data-startref="ch6octuD" data-type="indexterm" id="id2249"/><a contenteditable="false" data-primary="" data-startref="ch6octuE" data-type="indexterm" id="id2250"/></p>
+          </div>
+        </div></section>
+      </div></section>
+      <section data-pdf-bookmark="Debugging Functional Correctness with NVIDIA Compute Sanitizer" data-type="sect1"><div class="sect1" id="ch06_debugging_functional_correctness_with_nvidia_compu_1757308039143929">
+        <h1>使用 <span class="keep-together">NVIDIA Compute Sanitizer</span> 调试功能正确性</h1>
+        <p>CUDA kernel 可启动大量 thread，<a contenteditable="false" data-primary="Compute Sanitizer (NVIDIA)" data-type="indexterm" id="id2251"/><a contenteditable="false" data-primary="CUDA Toolkit" data-secondary="NVIDIA Compute Sanitizer" data-type="indexterm" id="id2252"/><a contenteditable="false" data-primary="debugging" data-secondary="NVIDIA Compute Sanitizer" data-type="indexterm" id="id2253"/><a contenteditable="false" data-primary="NVIDIA Compute Sanitizer" data-type="indexterm" id="id2254"/><a contenteditable="false" data-primary="programming" data-secondary="NVIDIA Compute Sanitizer" data-type="indexterm" id="id2255"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="NVIDIA Compute Sanitizer" data-type="indexterm" id="id2256"/>memory bug、race 和 synchronization error 往往具有 timing-dependent behavior，普通 debugger/test 不易覆盖。CUDA Toolkit 中的 NVIDIA <a href="https://oreil.ly/qzhW5">Compute Sanitizer</a> 通过 runtime instrumentation 和相应检查器报告一部分 correctness error。它能提高缺陷发现率，但会显著增加运行开销，也不能证明未报告的程序完全正确或<span class="keep-together">可靠</span>。</p>
+        <p>可通过<a contenteditable="false" data-primary="compute-sanitizer CLI" data-type="indexterm" id="id2257"/><a contenteditable="false" data-primary="compute-sanitizer CLI" data-secondary="NVIDIA Tools Extension support" data-type="indexterm" id="id2258"/><a contenteditable="false" data-primary="Compute Sanitizer (NVIDIA)" data-secondary="compute-sanitizer CLI" data-type="indexterm" id="id2259"/><a contenteditable="false" data-primary="Compute Sanitizer (NVIDIA)" data-secondary="compute-sanitizer CLI" data-tertiary="NVIDIA Tools Extension support" data-type="indexterm" id="id2260"/><a contenteditable="false" data-primary="NVIDIA Compute Sanitizer" data-secondary="compute-sanitizer CLI" data-type="indexterm" id="id2261"/><a contenteditable="false" data-primary="NVIDIA Compute Sanitizer" data-secondary="compute-sanitizer CLI" data-tertiary="NVIDIA Tools Extension support" data-type="indexterm" id="id2262"/><a contenteditable="false" data-primary="NVTX (NVIDIA Tools Extension)" data-secondary="compute-sanitizer CLI supporting" data-type="indexterm" id="id2263"/> <code>compute-sanitizer</code> CLI 启动工具，并结合 NVIDIA Tools Extension（NVTX）annotation 改善报告上下文。是否应广泛插入 NVTX 取决于可观测性需求和 annotation overhead；它不会替代 sanitizer coverage。CLI 通常使用 <code>--option value</code>，可用 <code>--error-exitcode</code> 让发现 error 的进程返回指定非零状态。<span class="keep-together"><code>--kernel-name</code></span>、<code>--kernel-name-exclude</code> 等 filter 可缩小 instrumented kernel 范围；<code>--nvtx yes</code> 启用 NVTX 相关支持，但具体 filtering/leak-report behavior 依 Compute Sanitizer version/tool，应查当前 CLI 文档：</p>
+
+        <pre class="pagebreak-after" data-code-language="shell" data-type="programlisting">compute-sanitizer<code class="w"> </code><code class="o">[</code>--tool<code class="w"> </code>toolname<code class="o">]</code><code class="w"> </code><code class="o">[</code>options<code class="o">]</code><code class="w"> </code>&lt;application&gt;<code class="w"> </code><code class="o">[</code>app_args<code class="o">]</code><code class="w"/></pre>
+        <div class="less_space" data-type="tip">
+          <p>可把<a contenteditable="false" data-primary="continuous integration (CI)" data-secondary="Computer Sanitizer integrated" data-type="indexterm" id="id2264"/> Compute Sanitizer 纳入 CI 的代表性小规模 GPU test，并用 <code>--error-exitcode</code> 使报告 error 时任务失败。kernel filter 和 NVTX 可控制成本/上下文，但过滤过窄会漏掉跨 kernel/lifecycle 问题；还需固定 CUDA/tool version、保存日志并设置合理 timeout。</p>
+        </div>
+        <p>Compute Sanitizer 包含<a contenteditable="false" data-primary="Compute Sanitizer (NVIDIA)" data-secondary="four primary tools" data-type="indexterm" id="id2265"/><a contenteditable="false" data-primary="NVIDIA Compute Sanitizer" data-secondary="four primary tools" data-type="indexterm" id="id2266"/>四个主要 tool：memcheck、racecheck、initcheck 和 synccheck。它们分别覆盖不同类型的 memory access、shared-memory hazard、未初始化 global-memory read 和 synchronization misuse，覆盖范围不能由名称无限外推：</p>
+        <dl>
+          <dt>memcheck</dt>
+          <dd>
+            <p>memcheck 可精确检测/归因许多 global、local 和 shared-memory 的 out-of-bounds 或 misaligned access，报告 GPU hardware exception，并检查部分 device-side allocation leak。支持项与默认值依版本；例如可用 <code>--check-device-heap</code> 控制 device heap checking。它不能检测所有逻辑越界、host race 或未覆盖 execution path。</p>
+          </dd>
+          <dt>racecheck</dt>
+          <dd>
+            <p>racecheck 主要报告 shared-memory access hazard，包括 Write-After-Write、Write-After-Read 与 Read-After-Write，并分析相应 warp/block synchronization pattern。它不是通用 global-memory data-race detector；hazard report 也要结合 programming model 判断 severity。Volta 及后续 independent thread scheduling 下，过去依赖 implicit warp lockstep 的代码尤其需要显式合适同步。</p>
+          </dd>
+          <dt>initcheck</dt>
+          <dd>
+            <p>initcheck 检测对未初始化 device global memory 的读取，<a contenteditable="false" data-primary="global memory" data-primary-sortas="global memory" data-secondary="Initcheck of NVIDIA Compute Sanitizer" data-type="indexterm" id="id2267"/>例如遗漏 host-to-device initialization 或某些 device write path。它不检查所有 memory space/逻辑初始化条件，通常应先运行 memcheck，避免 invalid access 干扰 initialization analysis。</p>
+          </dd>
+          <dt>synccheck</dt>
+          <dd>
+            <p>synccheck 检测一部分 synchronization primitive misuse，例如 divergent/mismatched barrier、无效 barrier argument 或 warp-level synchronization mask 问题，具体能力依 architecture/tool version。它不是完整的 deadlock detector，也不会证明所有 thread ordering、memory fence 和 application state 都正确。</p>
+          </dd>
+        </dl>
+      <p>总之，NVIDIA Compute Sanitizer 能帮助发现 CUDA application 中一部分 memory、shared-memory race、initialization 和 synchronization bug。将其用于有代表性的 CI/test workload，可更早发现回归；仍应结合 unit/property test、error checking、compiler warning、debug build 和真实并发场景，因为 sanitizer clean run 既不证明完整 correctness，也不证明 production performance。</p>
+      </div></section>
+      <section class="pagebreak-before" data-pdf-bookmark="Roofline Model: Compute-Bound or Memory-Bound Workloads" data-type="sect1"><div class="sect1" id="ch06_roofline_model_compute_bound_or_memory_bound_work_1757308039143979">
+        <h1 class="less_space">Roofline 模型：计算受限还是<span class="keep-together">内存受限工作负载</span></h1>
+        <p>Roofline 模型是一种实用的<a contenteditable="false" data-primary="programming" data-secondary="CUDA" data-tertiary="roofline model" data-type="indexterm" id="ch6roof"/><a contenteditable="false" data-primary="CUDA" data-secondary="programming" data-tertiary="roofline model" data-type="indexterm" id="ch6roof2"/><a contenteditable="false" data-primary="roofline model" data-type="indexterm" id="ch6roof3"/><a contenteditable="false" data-primary="hardware" data-secondary="roofline model" data-type="indexterm" id="ch6roof4"/><a contenteditable="false" data-primary="performance metrics" data-secondary="roofline model" data-type="indexterm" id="ch6roof5"/><a contenteditable="false" data-primary="Blackwell GPU (NVIDIA)" data-secondary="roofline model" data-type="indexterm" id="ch6roof6"/>可视化方法，它刻画两类硬件性能上限：处理器峰值浮点运算率形成的水平线，以及由峰值内存带宽决定的斜线。两者共同构成“屋顶线”包络，可用来判断给定 kernel 在该模型及所选度量口径下更接近计算受限（compute bound）还是数据移动受限（memory bound）。</p>
+        <p>两条线的交点称为<em>山脊点（ridge point）</em>，它对应算术强度阈值：在基础 Roofline 模型中，山脊点左侧受内存带宽上限约束，右侧受计算上限约束。<a contenteditable="false" data-primary="global memory" data-primary-sortas="global memory" data-secondary="arithmetic intensity" data-type="indexterm" id="id2268"/><a contenteditable="false" data-primary="arithmetic intensity" data-type="indexterm" id="id2269"/>算术强度是执行的 FLOP 数与某一内存层级传输字节数之比。这里采用 GPU 与片外 HBM/global memory 之间的数据流量作为字节口径；若改用 L1、L2 或算法层面的流量，所得强度和对应 roof 也会不同。</p>
+        <p>来看一个简单示例。假设某个 kernel 读入两个 32 位浮点数（共 8 字节），执行一次加法（1 FLOP），再写回一个 32 位浮点结果（4 字节）。若这 12 字节都形成片外流量，则算法以 12 字节内存流量完成 1 FLOP，算术强度为 0.083 FLOP/byte（1 FLOP / 12 byte ≈ 0.083 FLOP/byte）。缓存命中、write allocation、合并访问和实际事务粒度会使测得流量偏离这个简化估算。</p>
+        <p>再将其与 10 FLOP/byte 的 GPU 山脊点比较（约 80 TFLOP/s ÷ 8 TB/s = 10 FLOP/byte）。示例 kernel 的算术强度为 0.083 FLOP/byte，位于 roofline 左侧的内存受限区域，比该阈值低 100 倍以上，因而无法仅靠增加计算单元就达到计算峰值。在这个简化模型中，其性能上限主要由内存流量决定。<a data-type="xref" href="#ch06_figure_21_1757308039123862">图 6-21</a>给出了 Blackwell 级 GPU 的示意性 Roofline：水平线表示约 80 TFLOP/s 的 FP32 计算上限，斜线对应 8 TB/s 的 HBM 带宽上限。</p>
+        
+        <p>山脊点应由同一测量口径下的计算吞吐上限除以内存带宽上限得到；采用理论峰值或持续实测值都可以，但不能混用。图中的两个示意上限相除得到 10 FLOP/byte。示例 kernel 位于斜向内存带宽 roof 上的 0.083 FLOP/byte 处，因此 Roofline 模型将其归入内存带宽受限区域。</p>
+        <p>要减轻这种内存受限程度，可以通过数据复用、算子融合或减少不必要的数据移动，让每传输一个字节完成更多有效运算，使工作点向右移动并接近计算 roof。不过，单纯增加无用 FLOP 并不会改善实际性能；优化目标应是提高有用计算与必要流量之比。</p>
+        <figure><div class="figure" id="ch06_figure_21_1757308039123862">
+          <img alt="Blackwell GPU 屋顶线模型示意图，显示峰值计算性能为 80 TFLOPS、峰值内存带宽为 8 TB/s；示例内核的算术强度为 0.083 FLOPS/字节，表明其处于内存受限区间。" src="assets/aisp_0621.png"/>
+          <h6><span class="label">图 6-21。</span>Blackwell 级 GPU 的 Roofline 模型（FP32 约 80 TFLOP/s，HBM3e 约 8 TB/s），其中标出了示例 kernel 的工作点以及算术强度约 10 FLOP/byte 的山脊点</h6>
+        </div></figure>
+        <p>降低数据精度是减少字节流量的一种方法。例如，在运算次数和访存次数不变、且没有额外转换或元数据开销时，以 16 位浮点数（FP16）替代 32 位浮点数（FP32），每个值的传输字节数减半，FLOP/byte <span class="keep-together">算术强度</span>可相应翻倍。</p>
+        <p>现代 GPU 还提供面向 8 位浮点（FP8）的 Tensor Core。Blackwell 又为特定 AI 工作负载引入原生 4 位浮点（FP4）Tensor Core 支持。较窄的数据格式可以继续减少每个值的字节数，但实际收益取决于算子是否使用相应 Tensor Core 路径、量化尺度与元数据开销，以及精度要求。</p>
+        <p>例如，FP8 每个裸数据值占 1 字节，相比 FP16 可将值存储量减半；FP4 每个裸值占半字节，可用于部分推理工作负载。不能仅由位宽断言计算吞吐必然翻倍，因为不同精度的峰值、指令形态、累加精度、稀疏性口径和实际 kernel 效率各不相同。</p>
+        <p>若忽略对齐、打包和元数据开销，一次 128 字节内存传输可容纳 32 个 FP32、64 个 FP16、128 个 FP8 或 256 个 FP4 值。Blackwell 还提供针对压缩模型权重的数据解压机制，可在数据送入 Tensor Core 路径时进行硬件辅助解压。若权重在 HBM 中以受支持的压缩格式存储，读取的物理字节数可能减少，从而提高该权重流的有效带宽；具体格式和路径必须以相应 GPU、CUDA 与算子文档为准。</p>
+        <p>因此，Blackwell 对 transformer token generation 等经常受权重读取限制的工作负载具有潜在优势。权重可以采用低位宽格式存储，在加载与计算路径中解码，并以适当精度进行乘加或累加。不过，“4 位或 2 位权重自动由硬件解压并统一转换为 FP16/FP32”并不是所有 kernel 的通用行为。低精度只有在软件栈选中受支持路径且模型质量可接受时，才会减少数据移动并提高有效吞吐。</p>
+        <p>对于内存受限工作负载，优化方向通常是减少必要的数据传输或提高数据复用，使有效工作点向右、向更高性能区域移动。目标不一定是把 kernel 变成计算受限，而是在精度、延迟和资源约束下缩短实际执行时间。</p>
+        <div data-type="tip">
+          <p>Transformer 模型（如 LLM）在不同阶段可能分别表现为计算受限或内存受限。prefill 通常具有较大的矩阵维度和较高并行度，许多 GEMM 更容易接近计算受限；逐 token decode 的小批量矩阵运算则常受权重或 KV cache 带宽、kernel launch 与延迟限制。但这不是按“attention 与矩阵乘法”划分的固定结论，实际边界随 batch size、sequence length、并行策略、量化和硬件而变化。第 <a data-type="xref" data-xrefstyle="select:labelnumber" href="ch15.html#ch15_multinode_inference_parallelism_decoding_and_ro_1757308073696896">15</a>–<a data-type="xref" data-xrefstyle="select:labelnumber" href="ch18.html#ch18_advanced_prefill_decode_and_kv_cache_tuning_1757308075845302">18</a> 章将在深入讨论推理时进一步说明。</p>
+        </div>
+        <p>内存带宽受限 kernel 常表现为较高的 DRAM 吞吐利用率和较低的计算管线利用率，但不能仅凭这一组合断言所有 warp 都在等待内存。低计算利用率还可能来自指令依赖、低 occupancy、分支、同步或 launch 配置；延迟受限 kernel 也可能尚未打满 DRAM 带宽。</p>
+        <p>要进一步定位原因，可使用 Nsight Compute 查看单个 kernel 的吞吐、cache hit rate、warp issue stall reason 和源代码级指标。不同版本支持的 replay、source correlation 和 launch 相关指标有所差异，应以当前版本文档和采集权限为准。这些信息有助于区分内存依赖、寄存器压力和 launch 配置等影响。</p>
+        <p>随后可用 Nsight Systems 从全局时间线观察 GPU 空闲区间、CPU 工作重叠以及 PCIe/NVLink 活动。两者结合，可以同时回答<em>为什么</em>某个 kernel 受限，以及这些事件在应用整体执行中<em>何时</em>发生。</p>
+        <p>关键是迭代进行性能分析，结合 Nsight Compute 与 Nsight Systems 的指标定位内存热点。可以在可疑代码周围添加 NVTX range，放大检查时间线，再依据测量反馈进行优化。</p>
+        <p>例如，可用 NVTX 将区域标记为“memory copy”或“kernel execution”，并在 Nsight Systems 时间线中观察它们。这有助于确认前文所述的主机与设备传输是否真正和计算重叠。</p>
+        <p>要验证重叠，可以为数据传输和 kernel 调用相关的主机代码添加 NVTX range。Nsight Systems 会显示这些 range 以及关联的 CUDA 活动，但 NVTX range 本身通常表示主机 API 区间，并不等同于设备操作的精确起止时间。使用异步内存复制（<code>cudaMemcpyAsync</code>）只是实现重叠的必要条件之一；是否能与 GPU kernel 执行重叠，还取决于 stream、依赖关系、页锁定主机内存、copy engine、传输方向和硬件并发能力。<a data-type="xref" href="#ch06_figure_22_1757308039123878">图 6-22</a>对比了同步传输与可能发生重叠的异步内存<span class="keep-together">传输</span>。</p>
+        <figure><div class="figure" id="ch06_figure_22_1757308039123878">
+          <img alt="展示同步数据传输和计算顺序发生、与异步传输和计算重叠的对比示意图。" src="assets/aisp_0622.png"/>
+          <h6><span class="label">图 6-22。</span>与 kernel 计算串行的同步数据传输，以及具备条件时可与计算重叠的异步数据传输</h6>
+        </div></figure>
+        <p>如果预期发生重叠，但时间线中复制与 kernel 仍然串行，应检查意外的 default-stream synchronization、事件依赖、API 的同步语义、是否使用不同的 non-default stream、主机缓冲区是否为 pinned memory，以及设备能否并发执行相应 copy 与 kernel。不能只凭串行现象锁定某一个原因。</p>
+        <div data-type="tip">
+          <p>对于涉及普通 pageable host memory 的主机与设备传输，<code>cudaMemcpyAsync</code> 可能需要内部 staging 或产生同步行为，不能依赖其与 kernel 稳定重叠。要获得可预期的异步 H2D/D2H 行为，通常应使用 pinned（page-locked）host memory；此外仍须满足 stream、依赖关系与硬件并发条件。</p>
+        </div>
+        <p>怀疑 kernel 供数不足时，可以先用 Nsight Compute 分析 kernel，再用 Nsight Systems 检查端到端时间线。global load efficiency 较低通常表示线程请求的有效字节与实际传输字节之比较低，即访问未充分合并或存在浪费；它并不直接表示 DRAM 响应速度不足。Nsight Systems 中 kernel 之间的空档也可能来自主机 launch、同步、I/O 或依赖，需结合 CUDA API 与传输轨迹判断。</p>
+        <p>应用本章的内存层次结构优化后，应重新测量相关指标。成功的优化可能减少时间线空档、提高有效带宽或缩短 kernel 时间，但 memory pipe <span class="keep-together">利用率</span>并非越接近峰值越好：若用更少流量完成同样工作，利用率可能下降而性能反而提高。最终应以正确性、端到端延迟和吞吐量为判断依据。</p>
+        <div data-type="tip">
+          <p>每次改动后都要测量。性能分析工具可以验证优化是否真正减少了内存相关停顿并改善端到端性能。<a contenteditable="false" data-primary="" data-startref="ch6roof" data-type="indexterm" id="id2270"/><a contenteditable="false" data-primary="" data-startref="ch6roof2" data-type="indexterm" id="id2271"/><a contenteditable="false" data-primary="" data-startref="ch6roof3" data-type="indexterm" id="id2272"/><a contenteditable="false" data-primary="" data-startref="ch6roof4" data-type="indexterm" id="id2273"/><a contenteditable="false" data-primary="" data-startref="ch6roof5" data-type="indexterm" id="id2274"/><a contenteditable="false" data-primary="" data-startref="ch6roof6" data-type="indexterm" id="id2275"/> </p>
+        </div>
+      </div></section>
+      <section data-pdf-bookmark="Key Takeaways" data-type="sect1"><div class="sect1" id="ch06_key_takeaways_1757308039144029">
+        <h1>要点回顾</h1>
+        <p>本章介绍了如何选择 launch parameter、权衡 occupancy，如何异步管理 GPU memory，以及如何运用 Roofline 分析判断 kernel 更接近计算受限还是内存受限。下面回顾几个关键要点：</p>
+        <dl>
+          <dt>SIMT 执行模型</dt>
+          <dd>
+            <p>GPU 采用单指令多线程（SIMT）模型，以 warp（32 个 thread）为调度单位发射指令。同一 warp 的活跃 thread 执行同一条指令，但分支可能使不同路径分阶段执行。保持足够多的 resident warp 有助于隐藏 memory 与 pipeline latency；所需 occupancy 取决于 kernel 的依赖关系和资源使用，并非越高越好。</p>
+          </dd>
+          <dt>Thread 层次结构：thread → block → grid</dt>
+          <dd>
+            <p>thread 组成 thread block（每个 block 最多 1,024 个 thread），thread block 再组成 grid，使同一 kernel 可扩展到大量 thread。同步机制（如 <code>__syncthreads()</code> 或 cooperative groups）可协调 shared memory 中的数据复用，但会引入等待和约束；应在正确性所需的范围内减少不必要的 barrier。</p>
+          </dd>
+          <dt>Occupancy 与资源限制</dt>
+          <dd>
+            <p>block size 通常选择 32 的倍数，以免最后一个 warp 未满，但最终值仍需结合访存、并行度和资源使用进行测量。还要注意每个 SM 的架构与型号限制。原文列出的 Blackwell 示例上限包括每个 thread 255 个 register、每个 SM 228 KB shared memory、64 个 resident warp 和 32 个 resident thread block；具体可用 shared memory 与驻留限制应以目标 GPU 的 compute capability、配置和 CUDA 文档为准。</p>
+          </dd>
+          <dt>CUDA 内核启动参数</dt>
+          <dd>
+            <p>对于简单的一维 element-wise kernel，可将 <code>threadsPerBlock = 256</code>（8 个 warp）作为起始测试点，并以 <code>blocksPerGrid = (N + threadsPerBlock – 1) / threadsPerBlock</code> 覆盖全部元素。这不是通用最优值，应依据性能分析结果调整，包括 register 使用与 spilling、shared-memory 占用、achieved occupancy、访存效率和执行时间。</p>
+          </dd>
+          <dt>异步内存管理</dt>
+          <dd>
+            <p>在适合 stream-ordered allocation 的场景中，可使用 <code>cudaMallocAsync</code>/<code>cudaFreeAsync</code> 和 CUDA memory pool，减少传统分配路径可能引起的 device-wide synchronization 与重复底层分配开销；不要求把它们固定放在某个“专用 stream”，但必须正确表达对象生命周期与跨 stream 依赖。PyTorch caching allocator 采用类似的<a href="https://oreil.ly/KyJ2V">复用思路</a>来提高 tensor 分配效率，减少昂贵的 <code>cudaMalloc()</code> 和 <code>cudaFree()</code> <span class="keep-together">调用</span>，具体 backend 与行为随配置和版本而异。</p>
+          </dd>
+          <dt>GPU 内存层级</dt>
+          <dd>
+            <p>register → L1/shared memory → L2 → global memory（HBM3e）→ host memory：不同层级在容量、延迟、带宽、作用域和可编程性之间存在权衡。应在资源约束允许时提高 register、shared memory 与 cache 中的数据复用，但过多占用 register 或 shared memory 也可能降低并发度。</p>
+          </dd>
+          <dt>Unified Memory 注意事项</dt>
+          <dd>
+            <p>CUDA Managed Memory（Unified Memory）可以简化编程，但访问模式不佳时可能触发 page fault、migration 或远程访问。可依据目标架构和访问阶段测试 <code>cudaMemPrefetchAsync</code> 与 memory advice；它们是放置提示和迁移工具，并不能保证消除所有意外停顿。</p>
+          </dd>
+          <dt>Roofline 模型分析</dt>
+          <dd>
+            <p>算术强度（FLOP/byte）与所选计算、内存 bandwidth roof 共同决定 kernel 在 Roofline 模型中的上限区域。FP16、FP8、FP4 或受支持的硬件解压路径可能减少数据字节数，但收益取决于精度、数据复用、元数据和实际指令路径。应结合 Nsight Compute 的单 kernel 指标与 Nsight Systems 时间线判断真正瓶颈。Blackwell 的 TMEM 为 Tensor Core 累加结果提供专用片上存储，UMMA 配合低精度数据路径可能减少部分 register/shared-memory traffic 或改善 pipeline，但不能笼统保证把 memory-bound kernel 转为 compute-bound。<a data-type="xref" href="ch10.html#ch10_intra_kernel_pipelining_warp_specialization_and_1757308054839290">第 10 章</a>将进一步讨论 UMMA。</p>
+          </dd>
+        </dl>
+      </div></section>
+      <section data-pdf-bookmark="Conclusion" data-type="sect1"><div class="sect1" id="ch06_conclusion_1757308039144074">
+        <h1>总结</h1>
+        <p>本章梳理了 GPU 的 SIMT 模型、thread 层次结构与多级内存系统，为高性能 CUDA 开发奠定基础。Occupancy 通常指 active warp 数相对于该 kernel 在目标 SM 上可达到的最大 resident warp 数之比，是隐藏延迟的重要因素之一；工具中 theoretical 与 achieved occupancy 的具体定义还需结合指标说明。</p>
+        <p>不过，最大化 occupancy 并不保证在所有场景中获得最佳性能。如果 thread 具有足够的指令级并行性（ILP），或者瓶颈位于其他资源，中等乃至较低 occupancy 也可能实现很高吞吐。</p>
+        <p>较高 occupancy 有助于隐藏延迟，但降低 active thread/block 数有时能让每个 thread 使用更多 register，减少 spilling，或允许更大的 tile，从而提高吞吐。这里释放的是每个 SM 的资源预算，使 resident block/thread 在不同配置间重新权衡，并不是“为其他 thread 免费增加 register”。应针对目标工作负载和硬件基准测试不同配置，寻找实际最优点。</p>
+        <p>掌握这些基础知识和性能分析方法后，就可以进一步开展有针对性的优化，例如减少 warp divergence、利用 GPU memory hierarchy，以及异步预取数据。后续还会深入介绍 TMA：它可以把受支持的 bulk tensor transfer 从 thread 的逐元素地址生成与搬运工作中分离出来，并与计算流水化；但数据传输仍占用相应内存与 copy 资源，实际 computational goodput 提升需要通过测量确认。</p>
+      </div></section>
+    </div></section></body></html>
